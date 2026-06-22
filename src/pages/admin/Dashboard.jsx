@@ -25,6 +25,7 @@ function AdminNav({ onSignOut }) {
         </div>
         {[
           { label: "Dashboard", to: "/admin" },
+          { label: "Portfolio", to: "/admin/portfolio" },
           { label: "Galleries", to: "/admin/galleries" },
           { label: "Inquiries", to: "/admin/inquiries" },
         ].map(l => (
@@ -129,6 +130,12 @@ export default function Dashboard() {
           color: COLORS.gold, marginBottom: "1rem",
         }}>Quick Actions</h2>
         <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+          <Link to="/admin/portfolio" style={{
+            fontFamily: "'Inter', sans-serif", fontSize: "11px",
+            letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 500,
+            color: COLORS.bg, background: COLORS.gold,
+            padding: "12px 24px", textDecoration: "none",
+          }}>Manage Portfolio</Link>
           <Link to="/admin/galleries" style={{
             fontFamily: "'Inter', sans-serif", fontSize: "11px",
             letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 500,
