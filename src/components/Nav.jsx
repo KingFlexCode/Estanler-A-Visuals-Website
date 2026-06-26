@@ -79,6 +79,11 @@ export default function Nav() {
               onMouseLeave={e => e.target.style.color = isActive(link.to) ? COLORS.gold : mutedColor}
             >{link.label}</Link>
           ))}
+
+          <Link to="/admin/login">
+            Owner Login
+          </Link>
+          
           <Link to="/book" style={{
             fontFamily: "'Inter', sans-serif", fontSize: "11px",
             letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 500,
