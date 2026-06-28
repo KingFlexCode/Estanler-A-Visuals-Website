@@ -14,35 +14,36 @@ export const COLORS = {
   text: "#1A1208",
 };
 
-export const BASE = "https://kkimcezmyiqtfjdczeii.supabase.co/storage/v1/object/public/Portfolio";
+export const BASE =
+  "https://kkimcezmyiqtfjdczeii.supabase.co/storage/v1/object/public/Portfolio";
 
 // Exact folder names as they appear in Supabase Storage
 export const FOLDER_CATEGORY_MAP = {
-  "Birthdays/originals":    "birthday",
+  "Birthdays/originals": "birthday",
   "Engadgements/originals": "engagement",
-  "Landscapes/originals":   "landscape",
-  "Lifestyle/originals":    "lifestyle",
-  "Portraits/originals":    "portrait",
-  "Things/originals":       "things",
-  "Weddings/originals":     "wedding",
+  "Landscapes/originals": "landscape",
+  "Lifestyle/originals": "lifestyle",
+  "Portraits/originals": "portrait",
+  "Things/originals": "things",
+  "Weddings/originals": "wedding",
 };
 
 export const ASPECT_MAP = {
-  "Birthdays/originals":    "4/5",
+  "Birthdays/originals": "4/5",
   "Engadgements/originals": "3/4",
-  "Landscapes/originals":   "16/9",
-  "Lifestyle/originals":    "4/5",
-  "Portraits/originals":    "4/5",
-  "Things/originals":       "1/1",
-  "Weddings/originals":     "3/4",
+  "Landscapes/originals": "16/9",
+  "Lifestyle/originals": "4/5",
+  "Portraits/originals": "4/5",
+  "Things/originals": "1/1",
+  "Weddings/originals": "3/4",
 };
 
 export const CATEGORY_LABELS = {
-  birthday:   "Birthdays",
+  birthday: "Birthdays",
   engagement: "Engagements",
-  landscape:  "Landscapes",
-  lifestyle:  "Lifestyle",
-  portrait:   "Portraits",
-  things:     "Things",
-  wedding:    "Weddings",
+  landscape: "Landscapes",
+  lifestyle: "Lifestyle",
+  portrait: "Portraits",
+  things: "Things",
+  wedding: "Weddings",
 };

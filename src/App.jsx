@@ -19,25 +19,36 @@ import Inquiries from "./pages/admin/Inquiries";
 
 function ScrollToTop() {
   const { pathname } = useLocation();
-  useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pathname]);
   return null;
 }
 
 function FontLoader() {
   useEffect(() => {
     const link = document.createElement("link");
-    link.href = "https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Inter:wght@300;400;500&display=swap";
+    link.href =
+      "https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Inter:wght@300;400;500&display=swap";
     link.rel = "stylesheet";
     document.head.appendChild(link);
   }, []);
   return null;
 }
 
-const NO_NAV_PATHS = ["/admin", "/admin/login", "/admin/galleries", "/admin/portfolio", "/admin/inquiries"];
+const NO_NAV_PATHS = [
+  "/admin",
+  "/admin/login",
+  "/admin/galleries",
+  "/admin/portfolio",
+  "/admin/inquiries",
+];
 
 function Layout() {
   const { pathname } = useLocation();
-  const showNav = !NO_NAV_PATHS.some(p => pathname.startsWith(p)) && !pathname.startsWith("/gallery/");
+  const showNav =
+    !NO_NAV_PATHS.some((p) => pathname.startsWith(p)) &&
+    !pathname.startsWith("/gallery/");
 
   return (
     <>
@@ -53,11 +64,57 @@ function Layout() {
         <Route path="/shop" element={<Shop />} />
         <Route path="/gallery/:slug" element={<Gallery />} />
         <Route path="/admin/login" element={<AdminLogin />} />
-        <Route path="/admin" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-        <Route path="/admin/galleries" element={<ProtectedRoute><Galleries /></ProtectedRoute>} />
-        <Route path="/admin/portfolio" element={<ProtectedRoute><PortfolioAdmin /></ProtectedRoute>} />
-        <Route path="/admin/inquiries" element={<ProtectedRoute><Inquiries /></ProtectedRoute>} />
-        <Route path="*" element={<div style={{ minHeight: "100vh", background: "#0A0A0A", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Playfair Display', serif", fontSize: "1.5rem", color: "#fff" }}>Page Not Found</div>} />
+        <Route
+          path="/admin"
+          element={
+            <ProtectedRoute>
+              <Dashboard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/galleries"
+          element={
+            <ProtectedRoute>
+              <Galleries />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/portfolio"
+          element={
+            <ProtectedRoute>
+              <PortfolioAdmin />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/inquiries"
+          element={
+            <ProtectedRoute>
+              <Inquiries />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="*"
+          element={
+            <div
+              style={{
+                minHeight: "100vh",
+                background: "#0A0A0A",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontFamily: "'Playfair Display', serif",
+                fontSize: "1.5rem",
+                color: "#fff",
+              }}
+            >
+              Page Not Found
+            </div>
+          }
+        />
       </Routes>
     </>
   );
