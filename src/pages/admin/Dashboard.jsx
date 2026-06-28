@@ -135,7 +135,7 @@ export default function Dashboard() {
       const [{ count: galleries }, { count: inquiries }, { count: newInq }] =
         await Promise.all([
           supabase
-            .from("galleries")
+            .from("client_galleries")
             .select("*", { count: "exact", head: true }),
           supabase
             .from("inquiries")
