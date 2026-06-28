@@ -8,6 +8,11 @@ import { AdminNav } from "./Dashboard";
 
 const PORTFOLIO_BUCKET = "Portfolio";
 
+const ADMIN_CATEGORY_LABELS = {
+  ...CATEGORY_LABELS,
+  unlisted: "Unlisted",
+};
+
 const STORAGE_CATEGORY_MAP = {
   birthday: "birthdays",
   engagement: "engagements",
@@ -16,6 +21,7 @@ const STORAGE_CATEGORY_MAP = {
   portrait: "portraits",
   things: "things",
   wedding: "weddings",
+  unlisted: "unlisted",
 };
 
 const DEFAULT_CATEGORY = "portrait";
@@ -111,6 +117,14 @@ function buildUploadName(file, index, options) {
   }
 
   return parts.filter(Boolean).join(options.separator || "-");
+}
+
+async function getFileSha256(file) {
+  const buffer = await file.arrayBuffer();
+  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+
+  return hashArray.map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function getImageDimensionsFromUrl(url) {
@@ -212,6 +226,12 @@ async function readExif(file) {
   }
 }
 
+function getPreviewUrl(image) {
+  return buildPublicUrl(
+    image?.display_path || image?.thumbnail_path || image?.original_path,
+  );
+}
+
 function FieldLabel({ children }) {
   return (
     <span
@@ -220,7 +240,7 @@ function FieldLabel({ children }) {
         marginBottom: 6,
         fontFamily: "var(--font-body)",
         fontSize: 10,
-        fontWeight: 700,
+        fontWeight: 800,
         letterSpacing: "0.13em",
         textTransform: "uppercase",
         color: COLORS.muted,
@@ -244,9 +264,7 @@ function TextInput({ label, value, onChange, type = "text", min, max, step }) {
         value={value ?? ""}
         onChange={(event) =>
           onChange(
-            type === "number" || type === "range"
-              ? Number(event.target.value)
-              : event.target.value,
+            type === "number" ? Number(event.target.value) : event.target.value,
           )
         }
         style={{
@@ -255,7 +273,7 @@ function TextInput({ label, value, onChange, type = "text", min, max, step }) {
           background: COLORS.surfaceDark,
           color: COLORS.text,
           border: `1px solid ${COLORS.border}`,
-          padding: type === "range" ? "8px 0" : "10px 12px",
+          padding: "10px 12px",
           outline: "none",
           fontFamily: "var(--font-body)",
           fontSize: 13,
@@ -304,7 +322,7 @@ function ToggleButton({ label, checked, onChange }) {
         cursor: "pointer",
         fontFamily: "var(--font-body)",
         fontSize: 11,
-        fontWeight: 700,
+        fontWeight: 800,
         letterSpacing: "0.12em",
         textTransform: "uppercase",
       }}
@@ -342,7 +360,7 @@ function RangeControl({
             color: COLORS.gold,
             fontFamily: "var(--font-body)",
             fontSize: 11,
-            fontWeight: 700,
+            fontWeight: 800,
             letterSpacing: "0.08em",
           }}
         >
@@ -367,10 +385,62 @@ function RangeControl({
   );
 }
 
+function PanelCard({ title, children }) {
+  return (
+    <section
+      style={{
+        background: COLORS.bg,
+        border: `1px solid ${COLORS.borderDark}`,
+        padding: "1rem",
+        display: "grid",
+        gap: "1rem",
+      }}
+    >
+      {title && (
+        <h3
+          style={{
+            fontFamily: "var(--font-heading)",
+            color: COLORS.text,
+            fontSize: "1rem",
+            margin: 0,
+          }}
+        >
+          {title}
+        </h3>
+      )}
+
+      {children}
+    </section>
+  );
+}
+
+function MetadataRow({ label, value }) {
+  if (!value) return null;
+
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "110px 1fr",
+        gap: "0.75rem",
+        padding: "7px 0",
+        borderBottom: `1px solid ${COLORS.borderDark}`,
+        fontFamily: "var(--font-body)",
+        fontSize: 12,
+        lineHeight: 1.4,
+      }}
+    >
+      <div style={{ color: COLORS.muted }}>{label}</div>
+      <div style={{ color: COLORS.text }}>{value}</div>
+    </div>
+  );
+}
+
 function UploadModal({ open, onClose, onUploaded }) {
   const [category, setCategory] = useState(DEFAULT_CATEGORY);
   const [files, setFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadComplete, setUploadComplete] = useState(false);
   const [status, setStatus] = useState("");
   const [queue, setQueue] = useState([]);
 
@@ -384,12 +454,21 @@ function UploadModal({ open, onClose, onUploaded }) {
 
   if (!open) return null;
 
+  function updateQueueItem(index, patch) {
+    setQueue((previousQueue) =>
+      previousQueue.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...patch } : item,
+      ),
+    );
+  }
+
   function handleFileSelection(nextFiles) {
     const imageFiles = Array.from(nextFiles).filter((file) =>
       file.type.startsWith("image/"),
     );
 
     setFiles(imageFiles);
+    setUploadComplete(false);
     setStatus(
       imageFiles.length
         ? `${imageFiles.length} image${
@@ -397,10 +476,43 @@ function UploadModal({ open, onClose, onUploaded }) {
           } ready.`
         : "Choose at least one image file.",
     );
-    setQueue([]);
+
+    setQueue(
+      imageFiles.map((file) => ({
+        name: file.name,
+        status: "ready",
+        message: "Ready",
+      })),
+    );
+  }
+
+  async function checkDuplicate(fileSha) {
+    const { data, error } = await supabase
+      .from("portfolio_images")
+      .select("id, title, file_name")
+      .eq("original_sha256", fileSha)
+      .maybeSingle();
+
+    if (error) throw error;
+    return data;
   }
 
   async function uploadOneFile(file, selectedCategory, index) {
+    updateQueueItem(index, {
+      status: "hashing",
+      message: "Checking duplicate",
+    });
+    const originalSha256 = await getFileSha256(file);
+    const duplicate = await checkDuplicate(originalSha256);
+
+    if (duplicate) {
+      return {
+        name: file.name,
+        status: "skipped",
+        message: `Duplicate skipped: ${duplicate.title || duplicate.file_name}`,
+      };
+    }
+
     const folder = getStorageFolder(selectedCategory);
 
     const uploadBaseName = buildUploadName(file, index, {
@@ -423,13 +535,28 @@ function UploadModal({ open, onClose, onUploaded }) {
     const originalUrl = URL.createObjectURL(file);
 
     try {
+      updateQueueItem(index, {
+        status: "processing",
+        message: "Reading image",
+      });
+
       const originalDimensions = await getImageDimensionsFromUrl(originalUrl);
+
+      updateQueueItem(index, {
+        status: "processing",
+        message: "Creating display + thumbnail",
+      });
 
       const [exif, displayImage, thumbnailImage] = await Promise.all([
         readExif(file),
         resizeImage(file, 2200, 0.84),
         resizeImage(file, 720, 0.78),
       ]);
+
+      updateQueueItem(index, {
+        status: "uploading",
+        message: "Uploading original",
+      });
 
       const originalUpload = await supabase.storage
         .from(PORTFOLIO_BUCKET)
@@ -441,6 +568,11 @@ function UploadModal({ open, onClose, onUploaded }) {
 
       if (originalUpload.error) throw originalUpload.error;
 
+      updateQueueItem(index, {
+        status: "uploading",
+        message: "Uploading display",
+      });
+
       const displayUpload = await supabase.storage
         .from(PORTFOLIO_BUCKET)
         .upload(displayPath, displayImage.blob, {
@@ -451,6 +583,11 @@ function UploadModal({ open, onClose, onUploaded }) {
 
       if (displayUpload.error) throw displayUpload.error;
 
+      updateQueueItem(index, {
+        status: "uploading",
+        message: "Uploading thumbnail",
+      });
+
       const thumbnailUpload = await supabase.storage
         .from(PORTFOLIO_BUCKET)
         .upload(thumbnailPath, thumbnailImage.blob, {
@@ -460,6 +597,8 @@ function UploadModal({ open, onClose, onUploaded }) {
         });
 
       if (thumbnailUpload.error) throw thumbnailUpload.error;
+
+      updateQueueItem(index, { status: "saving", message: "Saving metadata" });
 
       const title =
         renameMode === "original"
@@ -474,6 +613,7 @@ function UploadModal({ open, onClose, onUploaded }) {
           original_path: originalPath,
           display_path: displayPath,
           thumbnail_path: thumbnailPath,
+          original_sha256: originalSha256,
           title,
           alt_text: title,
           aspect_ratio: selectedCategory === "landscape" ? "16 / 9" : "4 / 5",
@@ -481,7 +621,7 @@ function UploadModal({ open, onClose, onUploaded }) {
           object_position_y: 50,
           zoom: 1,
           featured: false,
-          is_visible: true,
+          is_visible: selectedCategory !== "unlisted",
           display_order: 0,
           original_size_bytes: file.size,
           display_size_bytes: displayImage.size,
@@ -509,6 +649,8 @@ function UploadModal({ open, onClose, onUploaded }) {
   }
 
   async function startUpload() {
+    if (uploading || uploadComplete) return;
+
     if (files.length === 0) {
       setStatus("Choose at least one image file.");
       return;
@@ -519,34 +661,15 @@ function UploadModal({ open, onClose, onUploaded }) {
       `Uploading ${files.length} image${files.length === 1 ? "" : "s"}...`,
     );
 
-    setQueue(
-      files.map((file) => ({
-        name: file.name,
-        status: "waiting",
-        message: "Waiting",
-      })),
-    );
-
     const results = [];
 
     for (const [index, file] of files.entries()) {
-      setQueue((previousQueue) =>
-        previousQueue.map((item, itemIndex) =>
-          itemIndex === index
-            ? { ...item, status: "uploading", message: "Processing" }
-            : item,
-        ),
-      );
+      updateQueueItem(index, { status: "uploading", message: "Starting" });
 
       try {
         const result = await uploadOneFile(file, category, index);
         results.push(result);
-
-        setQueue((previousQueue) =>
-          previousQueue.map((item, itemIndex) =>
-            itemIndex === index ? result : item,
-          ),
-        );
+        updateQueueItem(index, result);
       } catch (error) {
         console.error(error);
 
@@ -557,24 +680,33 @@ function UploadModal({ open, onClose, onUploaded }) {
         };
 
         results.push(failedResult);
-
-        setQueue((previousQueue) =>
-          previousQueue.map((item, itemIndex) =>
-            itemIndex === index ? failedResult : item,
-          ),
-        );
+        updateQueueItem(index, failedResult);
       }
     }
 
     const successful = results.filter((item) => item.status === "done").length;
+    const skipped = results.filter((item) => item.status === "skipped").length;
     const failed = results.filter((item) => item.status === "failed").length;
 
-    setStatus(`Uploaded ${successful}. Failed ${failed}.`);
     setUploading(false);
+    setUploadComplete(true);
+    setFiles([]);
 
-    if (successful > 0) {
+    if (failed === 0) {
+      setStatus(
+        `Done. Uploaded ${successful}. Skipped duplicates ${skipped}. Closing...`,
+      );
       await onUploaded();
+
+      window.setTimeout(() => {
+        onClose();
+      }, 900);
+
+      return;
     }
+
+    setStatus(`Uploaded ${successful}. Skipped ${skipped}. Failed ${failed}.`);
+    await onUploaded();
   }
 
   return (
@@ -593,7 +725,7 @@ function UploadModal({ open, onClose, onUploaded }) {
     >
       <div
         style={{
-          width: "min(880px, 100%)",
+          width: "min(900px, 100%)",
           maxHeight: "90vh",
           overflowY: "auto",
           background: COLORS.surfaceDark,
@@ -635,7 +767,8 @@ function UploadModal({ open, onClose, onUploaded }) {
                 fontSize: 13,
               }}
             >
-              Create originals, display images, thumbnails, and metadata.
+              Create originals, display images, thumbnails, duplicate checks,
+              and metadata.
             </p>
           </div>
 
@@ -661,7 +794,7 @@ function UploadModal({ open, onClose, onUploaded }) {
             value={category}
             onChange={setCategory}
           >
-            {Object.entries(CATEGORY_LABELS).map(([key, label]) => (
+            {Object.entries(ADMIN_CATEGORY_LABELS).map(([key, label]) => (
               <option key={key} value={key}>
                 {label}
               </option>
@@ -703,17 +836,7 @@ function UploadModal({ open, onClose, onUploaded }) {
               : "Drop images here or click to choose files"}
           </label>
 
-          <div
-            style={{
-              background: COLORS.bg,
-              border: `1px solid ${COLORS.borderDark}`,
-              padding: "1rem",
-              display: "grid",
-              gap: "1rem",
-            }}
-          >
-            <FieldLabel>Rename Options</FieldLabel>
-
+          <PanelCard title="Rename Options">
             <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
               <ToggleButton
                 label="Keep Original Names"
@@ -783,7 +906,7 @@ function UploadModal({ open, onClose, onUploaded }) {
                 </div>
               </div>
             )}
-          </div>
+          </PanelCard>
 
           {status && (
             <div
@@ -842,20 +965,418 @@ function UploadModal({ open, onClose, onUploaded }) {
             <button
               type="button"
               onClick={startUpload}
-              disabled={uploading || files.length === 0}
+              disabled={uploading || uploadComplete || files.length === 0}
               className="btn-primary"
               style={{
-                opacity: uploading || files.length === 0 ? 0.65 : 1,
+                opacity:
+                  uploading || uploadComplete || files.length === 0 ? 0.65 : 1,
                 cursor:
-                  uploading || files.length === 0 ? "not-allowed" : "pointer",
+                  uploading || uploadComplete || files.length === 0
+                    ? "not-allowed"
+                    : "pointer",
               }}
             >
-              {uploading ? "Uploading..." : "Start Upload"}
+              {uploading
+                ? "Uploading..."
+                : uploadComplete
+                  ? "Done"
+                  : "Start Upload"}
             </button>
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function ControlPanel({ image, onChange, onSave, onDelete, saving, deleting }) {
+  if (!image) {
+    return (
+      <aside
+        className="portfolio-left-panel"
+        style={{
+          position: "sticky",
+          top: "calc(var(--nav-height) + 1rem)",
+          alignSelf: "start",
+          background: COLORS.surfaceDark,
+          border: `1px solid ${COLORS.border}`,
+          padding: "1rem",
+          minHeight: 420,
+        }}
+      >
+        <div
+          style={{
+            color: COLORS.muted,
+            fontFamily: "var(--font-body)",
+            fontSize: 13,
+            lineHeight: 1.7,
+          }}
+        >
+          Select an image to edit settings, crop, visibility, category, and
+          metadata.
+        </div>
+      </aside>
+    );
+  }
+
+  const set = (key, value) => onChange({ ...image, [key]: value });
+
+  const x = image.object_position_x ?? 50;
+  const y = image.object_position_y ?? 50;
+  const zoom = Number(image.zoom || 1);
+  const aspectRatio = image.aspect_ratio || "4 / 5";
+
+  function resetCropControls() {
+    onChange({
+      ...image,
+      object_position_x: 50,
+      object_position_y: 50,
+      zoom: 1,
+    });
+  }
+
+  return (
+    <aside
+      className="portfolio-left-panel"
+      style={{
+        position: "sticky",
+        top: "calc(var(--nav-height) + 1rem)",
+        alignSelf: "start",
+        height: "calc(100vh - var(--nav-height) - 2rem)",
+        overflowY: "auto",
+        background: COLORS.surfaceDark,
+        border: `1px solid ${COLORS.border}`,
+        padding: "1rem",
+      }}
+    >
+      <div style={{ display: "grid", gap: "1rem" }}>
+        <PanelCard title="Crop Controls">
+          <RangeControl
+            label="Zoom"
+            min={1}
+            max={2}
+            step={0.01}
+            value={zoom}
+            displayValue={`${zoom.toFixed(2)}x`}
+            onChange={(value) => set("zoom", value)}
+          />
+
+          <RangeControl
+            label="Position X"
+            min={0}
+            max={100}
+            step={1}
+            value={x}
+            displayValue={`${x}%`}
+            onChange={(value) => set("object_position_x", value)}
+          />
+
+          <RangeControl
+            label="Position Y"
+            min={0}
+            max={100}
+            step={1}
+            value={y}
+            displayValue={`${y}%`}
+            onChange={(value) => set("object_position_y", value)}
+          />
+
+          <div>
+            <FieldLabel>Aspect Ratio</FieldLabel>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: "0.5rem",
+              }}
+            >
+              {[
+                ["1 / 1", "Square"],
+                ["3 / 4", "Portrait 3:4"],
+                ["4 / 5", "Portrait 4:5"],
+                ["16 / 9", "Wide"],
+              ].map(([value, label]) => {
+                const active = aspectRatio === value;
+
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => set("aspect_ratio", value)}
+                    style={{
+                      border: `1px solid ${
+                        active ? COLORS.gold : COLORS.border
+                      }`,
+                      background: active ? COLORS.gold : "transparent",
+                      color: active ? COLORS.bgDark : COLORS.muted,
+                      padding: "9px 10px",
+                      cursor: "pointer",
+                      fontFamily: "var(--font-body)",
+                      fontSize: 10,
+                      fontWeight: 800,
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={resetCropControls}
+            className="btn-secondary"
+            style={{ width: "100%" }}
+          >
+            Reset Crop
+          </button>
+        </PanelCard>
+
+        <PanelCard title="Image Details">
+          <TextInput
+            label="Title"
+            value={image.title || ""}
+            onChange={(value) => set("title", value)}
+          />
+
+          <TextInput
+            label="Alt Text"
+            value={image.alt_text || ""}
+            onChange={(value) => set("alt_text", value)}
+          />
+
+          <SelectInput
+            label="Category"
+            value={image.category}
+            onChange={(value) => set("category", value)}
+          >
+            {Object.entries(ADMIN_CATEGORY_LABELS).map(([key, label]) => (
+              <option key={key} value={key}>
+                {label}
+              </option>
+            ))}
+          </SelectInput>
+
+          <TextInput
+            label="Display Order"
+            type="number"
+            value={image.display_order || 0}
+            onChange={(value) => set("display_order", value)}
+          />
+
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+            <ToggleButton
+              label="Visible"
+              checked={!!image.is_visible}
+              onChange={(value) => set("is_visible", value)}
+            />
+
+            <ToggleButton
+              label="Featured"
+              checked={!!image.featured}
+              onChange={(value) => set("featured", value)}
+            />
+          </div>
+        </PanelCard>
+
+        <button
+          type="button"
+          onClick={() => onSave(image)}
+          disabled={saving}
+          className="btn-primary"
+          style={{
+            width: "100%",
+            opacity: saving ? 0.7 : 1,
+            cursor: saving ? "not-allowed" : "pointer",
+          }}
+        >
+          {saving ? "Saving..." : "Save Image Settings"}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onDelete(image)}
+          disabled={deleting}
+          style={{
+            width: "100%",
+            background: "transparent",
+            color: COLORS.danger,
+            border: `1px solid ${COLORS.danger}`,
+            padding: "13px 18px",
+            cursor: deleting ? "not-allowed" : "pointer",
+            fontFamily: "var(--font-body)",
+            fontSize: 11,
+            fontWeight: 800,
+            letterSpacing: "0.14em",
+            textTransform: "uppercase",
+            opacity: deleting ? 0.7 : 1,
+          }}
+        >
+          {deleting ? "Deleting..." : "Delete Image"}
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function PreviewPanel({ image }) {
+  if (!image) {
+    return (
+      <aside
+        className="portfolio-preview-panel"
+        style={{
+          position: "sticky",
+          top: "calc(var(--nav-height) + 1rem)",
+          alignSelf: "start",
+          background: COLORS.surfaceDark,
+          border: `1px solid ${COLORS.border}`,
+          padding: "1rem",
+          minHeight: 420,
+        }}
+      >
+        <div
+          style={{
+            color: COLORS.muted,
+            fontFamily: "var(--font-body)",
+            fontSize: 13,
+            lineHeight: 1.7,
+          }}
+        >
+          Select an image to preview crop changes and review camera metadata.
+        </div>
+      </aside>
+    );
+  }
+
+  const previewUrl = getPreviewUrl(image);
+  const x = image.object_position_x ?? 50;
+  const y = image.object_position_y ?? 50;
+  const zoom = Number(image.zoom || 1);
+
+  return (
+    <aside
+      className="portfolio-preview-panel"
+      style={{
+        position: "sticky",
+        top: "calc(var(--nav-height) + 1rem)",
+        alignSelf: "start",
+        height: "calc(100vh - var(--nav-height) - 2rem)",
+        overflowY: "auto",
+        background: COLORS.surfaceDark,
+        border: `1px solid ${COLORS.border}`,
+        padding: "1rem",
+      }}
+    >
+      <div
+        style={{
+          color: COLORS.gold,
+          fontFamily: "var(--font-body)",
+          fontSize: 10,
+          fontWeight: 800,
+          letterSpacing: "0.16em",
+          textTransform: "uppercase",
+          marginBottom: 6,
+        }}
+      >
+        Live Preview
+      </div>
+
+      <h3
+        style={{
+          color: COLORS.text,
+          fontFamily: "var(--font-heading)",
+          fontSize: "1.1rem",
+          lineHeight: 1.25,
+          margin: "0 0 1rem",
+        }}
+      >
+        {image.title || image.file_name}
+      </h3>
+
+      <div
+        style={{
+          aspectRatio: image.aspect_ratio || "4 / 5",
+          background: COLORS.bg,
+          border: `1px solid ${COLORS.border}`,
+          overflow: "hidden",
+          marginBottom: "0.75rem",
+        }}
+      >
+        <img
+          src={previewUrl}
+          alt={image.alt_text || image.title || image.file_name}
+          decoding="async"
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            objectPosition: `${x}% ${y}%`,
+            transform: `scale(${zoom})`,
+            transition: "object-position 0.15s, transform 0.15s",
+          }}
+        />
+      </div>
+
+      <div
+        style={{
+          color: COLORS.muted,
+          fontFamily: "var(--font-body)",
+          fontSize: 11,
+          lineHeight: 1.4,
+          wordBreak: "break-word",
+          marginBottom: "1rem",
+        }}
+      >
+        {image.original_path}
+      </div>
+
+      <PanelCard title="Camera Metadata">
+        <MetadataRow label="Camera" value={image.camera_model} />
+        <MetadataRow label="Make" value={image.camera_make} />
+        <MetadataRow label="Lens" value={image.lens_model} />
+        <MetadataRow label="Focal Length" value={image.focal_length} />
+        <MetadataRow label="Aperture" value={image.aperture} />
+        <MetadataRow label="Shutter" value={image.shutter_speed} />
+        <MetadataRow label="ISO" value={image.iso} />
+        <MetadataRow
+          label="Taken"
+          value={
+            image.taken_at ? new Date(image.taken_at).toLocaleString() : null
+          }
+        />
+        <MetadataRow
+          label="GPS"
+          value={
+            image.gps_latitude && image.gps_longitude
+              ? `${image.gps_latitude}, ${image.gps_longitude}`
+              : null
+          }
+        />
+      </PanelCard>
+
+      <div style={{ height: "1rem" }} />
+
+      <PanelCard title="File Info">
+        <MetadataRow
+          label="Original"
+          value={formatBytes(image.original_size_bytes)}
+        />
+        <MetadataRow
+          label="Display"
+          value={formatBytes(image.display_size_bytes)}
+        />
+        <MetadataRow
+          label="Thumbnail"
+          value={formatBytes(image.thumbnail_size_bytes)}
+        />
+        <MetadataRow label="Mime" value={image.mime_type} />
+        <MetadataRow label="SHA-256" value={image.original_sha256} />
+      </PanelCard>
+    </aside>
   );
 }
 
@@ -867,7 +1388,14 @@ function PortfolioGallery({
   onFilterChange,
 }) {
   return (
-    <div>
+    <section
+      style={{
+        background: COLORS.surfaceDark,
+        border: `1px solid ${COLORS.border}`,
+        padding: "1rem",
+        minHeight: 540,
+      }}
+    >
       <div
         style={{
           display: "flex",
@@ -889,7 +1417,7 @@ function PortfolioGallery({
             cursor: "pointer",
             fontFamily: "var(--font-body)",
             fontSize: 11,
-            fontWeight: 700,
+            fontWeight: 800,
             letterSpacing: "0.1em",
             textTransform: "uppercase",
           }}
@@ -897,7 +1425,7 @@ function PortfolioGallery({
           All
         </button>
 
-        {Object.entries(CATEGORY_LABELS).map(([key, label]) => (
+        {Object.entries(ADMIN_CATEGORY_LABELS).map(([key, label]) => (
           <button
             key={key}
             type="button"
@@ -912,7 +1440,7 @@ function PortfolioGallery({
               cursor: "pointer",
               fontFamily: "var(--font-body)",
               fontSize: 11,
-              fontWeight: 700,
+              fontWeight: 800,
               letterSpacing: "0.1em",
               textTransform: "uppercase",
             }}
@@ -945,7 +1473,6 @@ function PortfolioGallery({
         >
           {images.map((image) => {
             const isSelected = image.id === selectedId;
-
             const previewUrl = buildPublicUrl(
               image.thumbnail_path || image.display_path || image.original_path,
             );
@@ -1011,507 +1538,22 @@ function PortfolioGallery({
                     {image.title || image.file_name}
                   </div>
 
-                  <div>{CATEGORY_LABELS[image.category] || image.category}</div>
+                  <div>
+                    {ADMIN_CATEGORY_LABELS[image.category] || image.category}
+                  </div>
+
+                  {image.category === "unlisted" && (
+                    <div style={{ color: COLORS.gold, marginTop: 3 }}>
+                      Admin only
+                    </div>
+                  )}
                 </div>
               </button>
             );
           })}
         </div>
       )}
-    </div>
-  );
-}
-
-function MetadataRow({ label, value }) {
-  if (!value) return null;
-
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "110px 1fr",
-        gap: "0.75rem",
-        padding: "7px 0",
-        borderBottom: `1px solid ${COLORS.borderDark}`,
-        fontFamily: "var(--font-body)",
-        fontSize: 12,
-        lineHeight: 1.4,
-      }}
-    >
-      <div style={{ color: COLORS.muted }}>{label}</div>
-      <div style={{ color: COLORS.text }}>{value}</div>
-    </div>
-  );
-}
-
-function EmptyInspector() {
-  return (
-    <aside
-      className="portfolio-inspector"
-      style={{
-        position: "sticky",
-        top: "calc(var(--nav-height) + 1rem)",
-        alignSelf: "start",
-        background: COLORS.surfaceDark,
-        border: `1px solid ${COLORS.border}`,
-        padding: "1rem",
-        minHeight: 420,
-      }}
-    >
-      <div
-        style={{
-          color: COLORS.muted,
-          fontFamily: "var(--font-body)",
-          fontSize: 13,
-          lineHeight: 1.7,
-        }}
-      >
-        Select an image from the gallery to edit its crop, category, featured
-        status, and metadata.
-      </div>
-    </aside>
-  );
-}
-
-function InspectorSidebar({ image, onChange, onSave, saving }) {
-  if (!image) {
-    return <EmptyInspector />;
-  }
-
-  const previewUrl = buildPublicUrl(
-    image.display_path || image.thumbnail_path || image.original_path,
-  );
-
-  const set = (key, value) => onChange({ ...image, [key]: value });
-
-  const x = image.object_position_x ?? 50;
-  const y = image.object_position_y ?? 50;
-  const zoom = Number(image.zoom || 1);
-  const aspectRatio = image.aspect_ratio || "4 / 5";
-
-  function resetCropControls() {
-    onChange({
-      ...image,
-      object_position_x: 50,
-      object_position_y: 50,
-      zoom: 1,
-    });
-  }
-
-  return (
-    <aside
-      className="portfolio-inspector"
-      style={{
-        position: "sticky",
-        top: "calc(var(--nav-height) + 1rem)",
-        alignSelf: "start",
-        background: COLORS.surfaceDark,
-        border: `1px solid ${COLORS.border}`,
-        height: "calc(100vh - var(--nav-height) - 2rem)",
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          flexShrink: 0,
-          padding: "1rem",
-          borderBottom: `1px solid ${COLORS.border}`,
-          background: COLORS.surfaceDark,
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: "1rem",
-            marginBottom: "0.75rem",
-          }}
-        >
-          <div>
-            <div
-              style={{
-                color: COLORS.gold,
-                fontFamily: "var(--font-body)",
-                fontSize: 10,
-                fontWeight: 800,
-                letterSpacing: "0.16em",
-                textTransform: "uppercase",
-                marginBottom: 4,
-              }}
-            >
-              Live Preview
-            </div>
-
-            <div
-              style={{
-                color: COLORS.text,
-                fontFamily: "var(--font-heading)",
-                fontSize: "1.05rem",
-                lineHeight: 1.2,
-              }}
-            >
-              {image.title || image.file_name}
-            </div>
-          </div>
-
-          <div
-            style={{
-              color: image.is_visible ? COLORS.gold : COLORS.muted,
-              border: `1px solid ${
-                image.is_visible ? COLORS.gold : COLORS.border
-              }`,
-              padding: "5px 8px",
-              fontFamily: "var(--font-body)",
-              fontSize: 9,
-              fontWeight: 800,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {image.is_visible ? "Visible" : "Hidden"}
-          </div>
-        </div>
-
-        <div
-          style={{
-            height: "clamp(190px, 24vh, 260px)",
-            background: COLORS.bg,
-            border: `1px solid ${COLORS.border}`,
-            overflow: "hidden",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <img
-            src={previewUrl}
-            alt={image.alt_text || image.title || image.file_name}
-            decoding="async"
-            style={{
-              width: "100%",
-              height: "100%",
-              objectFit: "cover",
-              objectPosition: `${x}% ${y}%`,
-              transform: `scale(${zoom})`,
-              transition: "object-position 0.15s, transform 0.15s",
-            }}
-          />
-        </div>
-
-        <div
-          style={{
-            marginTop: "0.65rem",
-            color: COLORS.muted,
-            fontFamily: "var(--font-body)",
-            fontSize: 10,
-            lineHeight: 1.4,
-            wordBreak: "break-word",
-          }}
-        >
-          {image.original_path}
-        </div>
-      </div>
-
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflowY: "auto",
-          padding: "1rem",
-        }}
-      >
-        <div
-          style={{
-            display: "grid",
-            gap: "1rem",
-          }}
-        >
-          <div
-            style={{
-              background: COLORS.bg,
-              border: `1px solid ${COLORS.borderDark}`,
-              padding: "1rem",
-              display: "grid",
-              gap: "1rem",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                gap: "1rem",
-                alignItems: "center",
-              }}
-            >
-              <h3
-                style={{
-                  fontFamily: "var(--font-heading)",
-                  color: COLORS.text,
-                  fontSize: "1rem",
-                  margin: 0,
-                }}
-              >
-                Crop Controls
-              </h3>
-
-              <button
-                type="button"
-                onClick={resetCropControls}
-                style={{
-                  background: "transparent",
-                  color: COLORS.muted,
-                  border: `1px solid ${COLORS.border}`,
-                  padding: "7px 10px",
-                  cursor: "pointer",
-                  fontFamily: "var(--font-body)",
-                  fontSize: 10,
-                  fontWeight: 800,
-                  letterSpacing: "0.1em",
-                  textTransform: "uppercase",
-                }}
-              >
-                Reset
-              </button>
-            </div>
-
-            <RangeControl
-              label="Zoom"
-              min={1}
-              max={2}
-              step={0.01}
-              value={zoom}
-              displayValue={`${zoom.toFixed(2)}x`}
-              onChange={(value) => set("zoom", value)}
-            />
-
-            <RangeControl
-              label="Position X"
-              min={0}
-              max={100}
-              step={1}
-              value={x}
-              displayValue={`${x}%`}
-              onChange={(value) => set("object_position_x", value)}
-            />
-
-            <RangeControl
-              label="Position Y"
-              min={0}
-              max={100}
-              step={1}
-              value={y}
-              displayValue={`${y}%`}
-              onChange={(value) => set("object_position_y", value)}
-            />
-
-            <div>
-              <FieldLabel>Aspect Ratio</FieldLabel>
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: "0.5rem",
-                }}
-              >
-                {[
-                  ["1 / 1", "Square"],
-                  ["3 / 4", "Portrait 3:4"],
-                  ["4 / 5", "Portrait 4:5"],
-                  ["16 / 9", "Wide"],
-                ].map(([value, label]) => {
-                  const active = aspectRatio === value;
-
-                  return (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => set("aspect_ratio", value)}
-                      style={{
-                        border: `1px solid ${
-                          active ? COLORS.gold : COLORS.border
-                        }`,
-                        background: active ? COLORS.gold : "transparent",
-                        color: active ? COLORS.bgDark : COLORS.muted,
-                        padding: "9px 10px",
-                        cursor: "pointer",
-                        fontFamily: "var(--font-body)",
-                        fontSize: 10,
-                        fontWeight: 800,
-                        letterSpacing: "0.08em",
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
-          <div
-            style={{
-              background: COLORS.bg,
-              border: `1px solid ${COLORS.borderDark}`,
-              padding: "1rem",
-              display: "grid",
-              gap: "1rem",
-            }}
-          >
-            <h3
-              style={{
-                fontFamily: "var(--font-heading)",
-                color: COLORS.text,
-                fontSize: "1rem",
-                margin: 0,
-              }}
-            >
-              Image Details
-            </h3>
-
-            <TextInput
-              label="Title"
-              value={image.title || ""}
-              onChange={(value) => set("title", value)}
-            />
-
-            <TextInput
-              label="Alt Text"
-              value={image.alt_text || ""}
-              onChange={(value) => set("alt_text", value)}
-            />
-
-            <SelectInput
-              label="Category"
-              value={image.category}
-              onChange={(value) => set("category", value)}
-            >
-              {Object.entries(CATEGORY_LABELS).map(([key, label]) => (
-                <option key={key} value={key}>
-                  {label}
-                </option>
-              ))}
-            </SelectInput>
-
-            <TextInput
-              label="Display Order"
-              type="number"
-              value={image.display_order || 0}
-              onChange={(value) => set("display_order", value)}
-            />
-
-            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-              <ToggleButton
-                label="Visible"
-                checked={!!image.is_visible}
-                onChange={(value) => set("is_visible", value)}
-              />
-
-              <ToggleButton
-                label="Featured"
-                checked={!!image.featured}
-                onChange={(value) => set("featured", value)}
-              />
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => onSave(image)}
-            disabled={saving}
-            className="btn-primary"
-            style={{
-              width: "100%",
-              opacity: saving ? 0.7 : 1,
-              cursor: saving ? "not-allowed" : "pointer",
-            }}
-          >
-            {saving ? "Saving..." : "Save Image Settings"}
-          </button>
-
-          <div
-            style={{
-              background: COLORS.bg,
-              border: `1px solid ${COLORS.borderDark}`,
-              padding: "1rem",
-            }}
-          >
-            <h3
-              style={{
-                fontFamily: "var(--font-heading)",
-                fontSize: "1rem",
-                color: COLORS.text,
-                margin: "0 0 0.75rem",
-              }}
-            >
-              Camera Metadata
-            </h3>
-
-            <MetadataRow label="Camera" value={image.camera_model} />
-            <MetadataRow label="Make" value={image.camera_make} />
-            <MetadataRow label="Lens" value={image.lens_model} />
-            <MetadataRow label="Focal Length" value={image.focal_length} />
-            <MetadataRow label="Aperture" value={image.aperture} />
-            <MetadataRow label="Shutter" value={image.shutter_speed} />
-            <MetadataRow label="ISO" value={image.iso} />
-            <MetadataRow
-              label="Taken"
-              value={
-                image.taken_at
-                  ? new Date(image.taken_at).toLocaleString()
-                  : null
-              }
-            />
-            <MetadataRow
-              label="GPS"
-              value={
-                image.gps_latitude && image.gps_longitude
-                  ? `${image.gps_latitude}, ${image.gps_longitude}`
-                  : null
-              }
-            />
-          </div>
-
-          <div
-            style={{
-              background: COLORS.bg,
-              border: `1px solid ${COLORS.borderDark}`,
-              padding: "1rem",
-            }}
-          >
-            <h3
-              style={{
-                fontFamily: "var(--font-heading)",
-                fontSize: "1rem",
-                color: COLORS.text,
-                margin: "0 0 0.75rem",
-              }}
-            >
-              File Info
-            </h3>
-
-            <MetadataRow
-              label="Original"
-              value={formatBytes(image.original_size_bytes)}
-            />
-            <MetadataRow
-              label="Display"
-              value={formatBytes(image.display_size_bytes)}
-            />
-            <MetadataRow
-              label="Thumbnail"
-              value={formatBytes(image.thumbnail_size_bytes)}
-            />
-            <MetadataRow label="Mime" value={image.mime_type} />
-          </div>
-        </div>
-      </div>
-    </aside>
+    </section>
   );
 }
 
@@ -1522,6 +1564,7 @@ export default function PortfolioAdmin() {
   const [filter, setFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
   const [status, setStatus] = useState("");
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
 
@@ -1531,6 +1574,8 @@ export default function PortfolioAdmin() {
   }, [filter, images]);
 
   const fetchImages = useCallback(async () => {
+    setLoading(true);
+
     const { data, error } = await supabase
       .from("portfolio_images")
       .select("*")
@@ -1594,7 +1639,7 @@ export default function PortfolioAdmin() {
       object_position_y: image.object_position_y ?? 50,
       zoom: Number(image.zoom || 1),
       featured: !!image.featured,
-      is_visible: !!image.is_visible,
+      is_visible: image.category === "unlisted" ? false : !!image.is_visible,
       display_order: Number(image.display_order || 0),
     };
 
@@ -1612,6 +1657,49 @@ export default function PortfolioAdmin() {
 
     setStatus(`Saved ${image.title || image.file_name}.`);
     await fetchImages();
+  }
+
+  async function deleteImage(image) {
+    const confirmed = window.confirm(
+      "Delete this image permanently? This removes the original, display image, thumbnail, and metadata row.",
+    );
+
+    if (!confirmed) return;
+
+    setDeletingId(image.id);
+    setStatus("");
+
+    const paths = [
+      image.original_path,
+      image.display_path,
+      image.thumbnail_path,
+    ].filter(Boolean);
+
+    try {
+      if (paths.length > 0) {
+        const { error: storageError } = await supabase.storage
+          .from(PORTFOLIO_BUCKET)
+          .remove(paths);
+
+        if (storageError) throw storageError;
+      }
+
+      const { error: deleteError } = await supabase
+        .from("portfolio_images")
+        .delete()
+        .eq("id", image.id);
+
+      if (deleteError) throw deleteError;
+
+      setStatus(`Deleted ${image.title || image.file_name}.`);
+      setSelectedImage(null);
+      await fetchImages();
+    } catch (error) {
+      console.error(error);
+      setStatus(`Delete error: ${error.message}`);
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   return (
@@ -1653,13 +1741,13 @@ export default function PortfolioAdmin() {
                 color: COLORS.muted,
                 fontSize: "0.9rem",
                 lineHeight: 1.7,
-                maxWidth: 680,
+                maxWidth: 760,
                 margin: "0.6rem 0 0",
               }}
             >
               Upload originals, generate optimized display images and
-              thumbnails, then manage crop, visibility, featured status, and
-              camera metadata.
+              thumbnails, prevent duplicates, manage publishing, and preview
+              crop changes live.
             </p>
           </div>
 
@@ -1704,54 +1792,58 @@ export default function PortfolioAdmin() {
             className="portfolio-manager-layout"
             style={{
               display: "grid",
-              gridTemplateColumns: "minmax(0, 1fr) minmax(380px, 460px)",
+              gridTemplateColumns:
+                "minmax(280px, 340px) minmax(0, 1fr) minmax(320px, 420px)",
               gap: "1rem",
               alignItems: "start",
             }}
           >
-            <section
-              style={{
-                background: COLORS.surfaceDark,
-                border: `1px solid ${COLORS.border}`,
-                padding: "1rem",
-                minHeight: 540,
-              }}
-            >
-              <PortfolioGallery
-                images={filteredImages}
-                selectedId={selectedImage?.id}
-                onSelect={handleSelect}
-                filter={filter}
-                onFilterChange={setFilter}
-              />
-            </section>
-
-            <InspectorSidebar
+            <ControlPanel
               image={selectedImage}
               onChange={handleLocalChange}
               onSave={saveImage}
+              onDelete={deleteImage}
               saving={savingId === selectedImage?.id}
+              deleting={deletingId === selectedImage?.id}
             />
+
+            <PortfolioGallery
+              images={filteredImages}
+              selectedId={selectedImage?.id}
+              onSelect={handleSelect}
+              filter={filter}
+              onFilterChange={setFilter}
+            />
+
+            <PreviewPanel image={selectedImage} />
           </div>
         )}
       </main>
 
       <style>{`
-        @media (max-width: 980px) {
+        @media (max-width: 1200px) {
           .portfolio-manager-layout {
-            grid-template-columns: 1fr !important;
+            grid-template-columns: minmax(280px, 360px) minmax(0, 1fr) !important;
           }
 
-          .portfolio-inspector {
+          .portfolio-preview-panel {
             position: static !important;
+            grid-column: 1 / -1;
             height: auto !important;
             max-height: none !important;
           }
         }
 
-        @media (max-width: 720px) {
+        @media (max-width: 900px) {
           .portfolio-manager-layout {
-            gap: 0.75rem !important;
+            grid-template-columns: 1fr !important;
+          }
+
+          .portfolio-left-panel,
+          .portfolio-preview-panel {
+            position: static !important;
+            height: auto !important;
+            max-height: none !important;
           }
         }
       `}</style>

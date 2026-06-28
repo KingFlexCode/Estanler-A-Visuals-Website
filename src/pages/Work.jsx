@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
-import { supabase } from "../lib/supabase";
-import { COLORS, BASE, CATEGORY_LABELS } from "../lib/constants";
+import { useEffect, useState } from "react";
 import Footer from "../components/Footer";
+import { BASE, CATEGORY_LABELS, COLORS } from "../lib/constants";
+import { supabase } from "../lib/supabase";
 
 const FILTERS = ["All", ...Object.values(CATEGORY_LABELS)];
 
@@ -11,14 +11,23 @@ function buildPublicUrl(path) {
 }
 
 function mapPortfolioImage(image) {
+  const gridPath =
+    image.thumbnail_path || image.display_path || image.original_path;
+
+  const lightboxPath =
+    image.display_path || image.original_path || image.thumbnail_path;
+
   return {
     id: image.id,
     category: image.category,
     label: image.title || image.file_name,
-    img: buildPublicUrl(image.thumbnail_path || image.original_path),
-    fullImg: buildPublicUrl(image.original_path),
+    img: buildPublicUrl(gridPath),
+    fullImg: buildPublicUrl(lightboxPath),
+    originalImg: buildPublicUrl(image.original_path),
     aspect: image.aspect_ratio || "4 / 5",
-    objectPosition: `${image.object_position_x ?? 50}% ${image.object_position_y ?? 50}%`,
+    objectPosition: `${image.object_position_x ?? 50}% ${
+      image.object_position_y ?? 50
+    }%`,
     zoom: Number(image.zoom || 1),
   };
 }
@@ -78,6 +87,7 @@ function CategoryNav({ active, onChange, counts }) {
           f === "All"
             ? Object.values(counts).reduce((a, b) => a + b, 0)
             : counts[categoryKey] || 0;
+
         return (
           <button
             key={f}
@@ -116,6 +126,7 @@ function CategoryNav({ active, onChange, counts }) {
           </button>
         );
       })}
+
       <style>{`::-webkit-scrollbar { display: none; }`}</style>
     </div>
   );
@@ -147,20 +158,26 @@ function chunkItems(items) {
   const groups = [];
   let i = 0;
   let rowIndex = 0;
+
   while (i < items.length) {
     const pattern = rowIndex % 4;
     let size;
-    if (pattern === 0)
+
+    if (pattern === 0) {
       size = Math.min(3, items.length - i); // 3 equal
-    else if (pattern === 1)
+    } else if (pattern === 1) {
       size = Math.min(2, items.length - i); // 2 - one tall one wide
-    else if (pattern === 2)
+    } else if (pattern === 2) {
       size = Math.min(4, items.length - i); // 4 small
-    else size = Math.min(2, items.length - i); // 2 equal
+    } else {
+      size = Math.min(2, items.length - i); // 2 equal
+    }
+
     groups.push(items.slice(i, i + size));
     i += size;
     rowIndex++;
   }
+
   return groups;
 }
 
@@ -283,6 +300,7 @@ function PhotoTile({ item, onSelect }) {
         src={item.img}
         alt={item.label}
         loading="lazy"
+        decoding="async"
         style={{
           width: "100%",
           height: "100%",
@@ -309,10 +327,14 @@ function Lightbox({ item, items, onClose, onNav }) {
   useEffect(() => {
     const handler = (e) => {
       if (e.key === "Escape") onClose();
-      if (e.key === "ArrowRight" && idx < items.length - 1)
+      if (e.key === "ArrowRight" && idx < items.length - 1) {
         onNav(items[idx + 1]);
-      if (e.key === "ArrowLeft" && idx > 0) onNav(items[idx - 1]);
+      }
+      if (e.key === "ArrowLeft" && idx > 0) {
+        onNav(items[idx - 1]);
+      }
     };
+
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [idx, items, onClose, onNav]);
@@ -375,6 +397,7 @@ function Lightbox({ item, items, onClose, onNav }) {
       <img
         src={item.fullImg || item.img}
         alt={item.label}
+        decoding="async"
         onClick={(e) => e.stopPropagation()}
         style={{ maxWidth: "90vw", maxHeight: "88vh", objectFit: "contain" }}
       />
@@ -433,10 +456,12 @@ export default function Work() {
       }
 
       const results = (data || []).map(mapPortfolioImage);
+
       setAllItems(results);
       setCounts(getCategoryCounts(results));
       setLoading(false);
     }
+
     fetchAll();
   }, []);
 
