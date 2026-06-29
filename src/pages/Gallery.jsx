@@ -1,182 +1,307 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Spinner } from "../components/UI";
 import { COLORS } from "../lib/constants";
 import { supabase } from "../lib/supabase";
 
-const BASE_GALLERY =
-  "https://kkimcezmyiqtfjdczeii.supabase.co/storage/v1/object/public/client-galleries";
+const CLIENT_GALLERY_BUCKET = "client-galleries";
+const BRAND_NAME = "Estanler Aleman Photography";
+
+const shellFont = "'Inter', sans-serif";
+const displayFont = "'Playfair Display', Georgia, serif";
+
+function getGalleryPhotoUrl(path) {
+  if (!path) return "";
+  const { data } = supabase.storage.from(CLIENT_GALLERY_BUCKET).getPublicUrl(path);
+  return data?.publicUrl || "";
+}
+
+function sortByOrder(items = []) {
+  return [...items].sort((a, b) => Number(a.display_order || 0) - Number(b.display_order || 0));
+}
+
+function formatDate(value) {
+  if (!value) return "";
+  const parsed = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function getPhotoUrl(photo, preferred = "display") {
+  if (!photo) return "";
+  const path =
+    preferred === "original"
+      ? photo.original_path || photo.display_path || photo.thumbnail_path
+      : preferred === "thumbnail"
+        ? photo.thumbnail_path || photo.display_path || photo.original_path
+        : photo.display_path || photo.thumbnail_path || photo.original_path;
+  return getGalleryPhotoUrl(path);
+}
+
+function getTypographyTheme(style = "classic") {
+  const themes = {
+    classic: {
+      family: displayFont,
+      weight: 600,
+      spacing: "0.02em",
+      transform: "none",
+    },
+    modern: {
+      family: shellFont,
+      weight: 800,
+      spacing: "-0.03em",
+      transform: "none",
+    },
+    editorial: {
+      family: displayFont,
+      weight: 600,
+      spacing: "0.18em",
+      transform: "uppercase",
+    },
+    luxury: {
+      family: "Didot, 'Bodoni 72', 'Playfair Display', Georgia, serif",
+      weight: 500,
+      spacing: "0.01em",
+      transform: "none",
+    },
+    romantic: {
+      family: "'Snell Roundhand', 'Brush Script MT', cursive",
+      weight: 500,
+      spacing: "0.01em",
+      transform: "none",
+    },
+    fashion: {
+      family: "Impact, 'Arial Black', sans-serif",
+      weight: 800,
+      spacing: "0.04em",
+      transform: "uppercase",
+    },
+    cinematic: {
+      family: shellFont,
+      weight: 700,
+      spacing: "0.2em",
+      transform: "uppercase",
+    },
+    minimal: {
+      family: "Helvetica, Arial, sans-serif",
+      weight: 300,
+      spacing: "0.08em",
+      transform: "uppercase",
+    },
+    playful: {
+      family: "'Trebuchet MS', Arial, sans-serif",
+      weight: 800,
+      spacing: "0.01em",
+      transform: "none",
+    },
+    street: {
+      family: "'Arial Black', Impact, sans-serif",
+      weight: 900,
+      spacing: "-0.02em",
+      transform: "uppercase",
+    },
+  };
+
+  return themes[style] || themes.classic;
+}
+
+function useLocalFavorites(galleryId) {
+  const [favorites, setFavorites] = useState(new Set());
+
+  useEffect(() => {
+    if (!galleryId) return;
+    try {
+      const stored = window.localStorage.getItem(`client-gallery-favorites:${galleryId}`);
+      setFavorites(new Set(stored ? JSON.parse(stored) : []));
+    } catch {
+      setFavorites(new Set());
+    }
+  }, [galleryId]);
+
+  useEffect(() => {
+    if (!galleryId) return;
+    window.localStorage.setItem(
+      `client-gallery-favorites:${galleryId}`,
+      JSON.stringify(Array.from(favorites)),
+    );
+  }, [favorites, galleryId]);
+
+  const toggleFavorite = useCallback((photoId) => {
+    setFavorites((current) => {
+      const next = new Set(current);
+      if (next.has(photoId)) next.delete(photoId);
+      else next.add(photoId);
+      return next;
+    });
+  }, []);
+
+  return { favorites, toggleFavorite };
+}
 
 export default function Gallery() {
   const { slug } = useParams();
   const [gallery, setGallery] = useState(null);
+  const [sections, setSections] = useState([]);
   const [photos, setPhotos] = useState([]);
-  const [state, setState] = useState("loading"); // loading | password | pin | view | notfound
-  const [password, setPassword] = useState("");
-  const [pin, setPin] = useState("");
-  const [pinError, setPinError] = useState(false);
-  const [error, setError] = useState(null);
+  const [state, setState] = useState("loading");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [lightbox, setLightbox] = useState(null);
-  const [favorites, setFavorites] = useState(new Set());
-  const [downloadCount, setDownloadCount] = useState(0);
+  const [hoveredPhotoId, setHoveredPhotoId] = useState(null);
 
-  const loadPhotos = useCallback(async (galleryId) => {
-    const { data } = await supabase
-      .from("gallery_photos")
-      .select("*")
-      .eq("gallery_id", galleryId)
-      .order("display_order", { ascending: true });
+  const { favorites, toggleFavorite } = useLocalFavorites(gallery?.id);
 
-    setPhotos(data || []);
-
-    const { count } = await supabase
-      .from("gallery_access")
-      .select("*", { count: "exact", head: true })
-      .eq("gallery_id", galleryId);
-
-    setDownloadCount(count || 0);
-  }, []);
-
-  useEffect(() => {
-    async function loadGallery() {
-      const { data, error: galleryError } = await supabase
-        .from("galleries")
-        .select("*")
-        .eq("slug", slug)
-        .single();
-
-      if (galleryError || !data) {
-        setState("notfound");
-        return;
-      }
-
-      setGallery(data);
-
-      if (data.expires_at && new Date(data.expires_at) < new Date()) {
-        setState("notfound");
-        return;
-      }
-
-      if (data.access_type === "public") {
-        await loadPhotos(data.id);
-        setState("view");
-      } else {
-        setState("password");
-      }
-    }
-
-    loadGallery();
-  }, [slug, loadPhotos]);
-
-  const canDownload = useCallback(() => {
-    if (!gallery || gallery.max_downloads === 0) return true;
-    return downloadCount < gallery.max_downloads;
-  }, [downloadCount, gallery]);
-
-  const triggerDownload = useCallback(
-    async (photo) => {
-      if (!photo || !gallery) return;
-
-      if (!canDownload()) {
-        alert("Download limit reached for this gallery.");
-        return;
-      }
-
-      await supabase
-        .from("gallery_access")
-        .insert([{ gallery_id: gallery.id, photo_id: photo.id }]);
-
-      setDownloadCount((previousCount) => previousCount + 1);
-
-      const url = `${BASE_GALLERY}/${photo.storage_path}`;
-      const link = document.createElement("a");
-
-      link.href = url;
-      link.download = photo.filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-    },
-    [canDownload, gallery],
+  const orderedSections = useMemo(() => sortByOrder(sections), [sections]);
+  const orderedPhotos = useMemo(() => sortByOrder(photos), [photos]);
+  const coverPhoto = useMemo(
+    () =>
+      orderedPhotos.find((photo) => photo.id === gallery?.cover_image_id) ||
+      orderedPhotos[0] ||
+      null,
+    [gallery?.cover_image_id, orderedPhotos],
+  );
+  const lightboxIndex = useMemo(
+    () => (lightbox ? orderedPhotos.findIndex((photo) => photo.id === lightbox.id) : -1),
+    [lightbox, orderedPhotos],
   );
 
-  const handlePassword = async () => {
-    if (password === gallery?.password) {
-      await loadPhotos(gallery.id);
-      setState("view");
-      setError(null);
-    } else {
-      setError("Incorrect password. Please try again.");
-    }
-  };
+  const loadGallery = useCallback(async () => {
+    if (!slug) return;
+    setState("loading");
+    setError("");
 
-  const handlePinSubmit = () => {
-    if (pin === gallery?.download_pin) {
-      setPinError(false);
-      triggerDownload(lightbox);
-    } else {
-      setPinError(true);
-    }
-  };
+    const { data: galleryData, error: galleryError } = await supabase
+      .from("client_galleries")
+      .select("*")
+      .eq("slug", slug)
+      .eq("status", "published")
+      .single();
 
-  const toggleFavorite = (id) => {
-    setFavorites((previousFavorites) => {
-      const nextFavorites = new Set(previousFavorites);
-
-      if (nextFavorites.has(id)) {
-        nextFavorites.delete(id);
-      } else {
-        nextFavorites.add(id);
-      }
-
-      return nextFavorites;
-    });
-  };
-
-  const handleDownloadClick = async (photo) => {
-    if (gallery?.download_pin) {
-      setLightbox({ ...photo, awaitPin: true });
-      setPin("");
-      setPinError(false);
-    } else {
-      await triggerDownload(photo);
-    }
-  };
-
-  const downloadAll = async () => {
-    if (!canDownload()) {
-      alert("Download limit reached for this gallery.");
+    if (galleryError || !galleryData) {
+      setGallery(null);
+      setState("notfound");
       return;
     }
 
-    for (const photo of photos) {
-      await handleDownloadClick(photo);
+    const [sectionResult, photoResult] = await Promise.all([
+      supabase
+        .from("client_gallery_sections")
+        .select("*")
+        .eq("gallery_id", galleryData.id)
+        .eq("is_visible", true)
+        .order("display_order", { ascending: true }),
+      supabase
+        .from("client_gallery_images")
+        .select("*")
+        .eq("gallery_id", galleryData.id)
+        .order("display_order", { ascending: true }),
+    ]);
+
+    if (sectionResult.error || photoResult.error) {
+      setError(sectionResult.error?.message || photoResult.error?.message || "Gallery could not load.");
+      setState("error");
+      return;
     }
-  };
+
+    setGallery(galleryData);
+    setSections(sectionResult.data || []);
+    setPhotos(photoResult.data || []);
+    setState("view");
+  }, [slug]);
 
   useEffect(() => {
-    if (!lightbox || lightbox.awaitPin) return undefined;
+    loadGallery();
+  }, [loadGallery]);
 
-    const currentIndex = photos.findIndex((photo) => photo.id === lightbox.id);
+  useEffect(() => {
+    if (!notice) return undefined;
+    const timer = window.setTimeout(() => setNotice(""), 4200);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
+    if (!lightbox) return undefined;
 
     const handleKeyDown = (event) => {
-      if (event.key === "Escape") {
-        setLightbox(null);
+      if (event.key === "Escape") setLightbox(null);
+      if (event.key === "ArrowRight" && lightboxIndex < orderedPhotos.length - 1) {
+        setLightbox(orderedPhotos[lightboxIndex + 1]);
       }
-
-      if (event.key === "ArrowRight" && currentIndex < photos.length - 1) {
-        setLightbox(photos[currentIndex + 1]);
-      }
-
-      if (event.key === "ArrowLeft" && currentIndex > 0) {
-        setLightbox(photos[currentIndex - 1]);
+      if (event.key === "ArrowLeft" && lightboxIndex > 0) {
+        setLightbox(orderedPhotos[lightboxIndex - 1]);
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
-
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [lightbox, photos]);
+  }, [lightbox, lightboxIndex, orderedPhotos]);
+
+  const scrollToPhotos = () => {
+    document.getElementById("gallery-sections")?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const sectionPhotos = useCallback(
+    (sectionId) => orderedPhotos.filter((photo) => photo.section_id === sectionId),
+    [orderedPhotos],
+  );
+
+  const copyText = async (text, message) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setNotice(message);
+    } catch {
+      setNotice("Copy failed. Please copy from the address bar.");
+    }
+  };
+
+  const shareGallery = async () => {
+    const url = window.location.href;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: gallery?.title || BRAND_NAME, url });
+        return;
+      } catch {
+        return;
+      }
+    }
+    copyText(url, "Gallery link copied.");
+  };
+
+  const sharePhoto = async (photo) => {
+    const url = getPhotoUrl(photo, "display");
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: photo.file_name || gallery?.title || BRAND_NAME, url });
+        return;
+      } catch {
+        return;
+      }
+    }
+    copyText(url, "Photo link copied.");
+  };
+
+  const downloadPhoto = (photo) => {
+    const url = getPhotoUrl(photo, "original");
+    if (!url) return;
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = photo.file_name || "gallery-photo";
+    link.target = "_blank";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
+
+  const goLightbox = (direction) => {
+    const nextIndex = lightboxIndex + direction;
+    if (nextIndex >= 0 && nextIndex < orderedPhotos.length) {
+      setLightbox(orderedPhotos[nextIndex]);
+    }
+  };
 
   if (state === "loading") {
     return (
@@ -184,9 +309,8 @@ export default function Gallery() {
         style={{
           minHeight: "100vh",
           background: COLORS.bg,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
+          display: "grid",
+          placeItems: "center",
         }}
       >
         <Spinner />
@@ -194,675 +318,665 @@ export default function Gallery() {
     );
   }
 
-  if (state === "notfound") {
+  if (state === "notfound" || state === "error") {
     return (
       <div
         style={{
           minHeight: "100vh",
           background: COLORS.bg,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
+          color: COLORS.white,
+          display: "grid",
+          placeItems: "center",
+          padding: "2rem",
           textAlign: "center",
         }}
       >
-        <div>
-          <div
-            style={{
-              fontFamily: "'Playfair Display', serif",
-              fontSize: "2rem",
-              color: COLORS.white,
-              marginBottom: "1rem",
-            }}
-          >
+        <div style={{ maxWidth: 460 }}>
+          <h1 style={{ fontFamily: displayFont, fontSize: "2.3rem", margin: "0 0 1rem" }}>
             Gallery Not Found
-          </div>
-
-          <div
-            style={{
-              fontFamily: "'Inter', sans-serif",
-              fontWeight: 300,
-              fontSize: "0.9rem",
-              color: COLORS.muted,
-            }}
-          >
-            This gallery may have expired or the link is incorrect.
-          </div>
+          </h1>
+          <p style={{ color: COLORS.muted, fontFamily: shellFont, lineHeight: 1.7, margin: 0 }}>
+            {error || "This gallery may be hidden, archived, or the link may be incorrect."}
+          </p>
         </div>
       </div>
     );
   }
 
-  if (state === "password") {
-    return (
+  const themeColor = gallery.theme_color || COLORS.gold;
+  const coverStyle = gallery.cover_style || "center";
+  const gridStyle = gallery.grid_style || "masonry";
+  const typeTheme = getTypographyTheme(gallery.typography_style || "classic");
+  const coverUrl = getPhotoUrl(coverPhoto, "display");
+  const objectPosition = `${gallery.cover_focal_x ?? 50}% ${gallery.cover_focal_y ?? 50}%`;
+  const coverBackground = {
+    backgroundImage: coverUrl ? `url(${coverUrl})` : "linear-gradient(135deg, #111, #333)",
+    backgroundPosition: objectPosition,
+    backgroundSize: "cover",
+    backgroundRepeat: "no-repeat",
+  };
+  const visiblePhotoCount = orderedSections.reduce(
+    (total, section) => total + sectionPhotos(section.id).length,
+    0,
+  );
+
+  const titleBlock = (align = "center", color = "#fff", options = {}) => (
+    <div
+      style={{
+        textAlign: align,
+        color,
+        width: "100%",
+        maxWidth: options.maxWidth || 760,
+        textShadow: color === "#fff" ? "0 14px 36px rgba(0,0,0,0.42)" : "none",
+      }}
+    >
       <div
         style={{
-          minHeight: "100vh",
-          background: COLORS.bg,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
+          color: options.dateColor || themeColor,
+          fontFamily: shellFont,
+          fontSize: options.dateSize || 12,
+          fontWeight: 800,
+          letterSpacing: "0.18em",
+          marginBottom: "0.85rem",
+          textTransform: "uppercase",
         }}
       >
-        <div style={{ width: "100%", maxWidth: "380px", padding: "2rem" }}>
-          <div style={{ textAlign: "center", marginBottom: "2.5rem" }}>
-            <div
-              style={{
-                fontFamily: "'Playfair Display', serif",
-                fontWeight: 700,
-                fontSize: "1.5rem",
-                color: COLORS.white,
-                marginBottom: "0.5rem",
-              }}
-            >
-              {gallery.title}
-            </div>
-
-            {gallery.client_name && (
-              <div
-                style={{
-                  fontFamily: "'Inter', sans-serif",
-                  fontWeight: 300,
-                  fontSize: "0.85rem",
-                  color: COLORS.muted,
-                }}
-              >
-                {gallery.client_name}
-              </div>
-            )}
-
-            <div
-              style={{
-                width: "40px",
-                height: "1px",
-                background: `linear-gradient(90deg, transparent, ${COLORS.gold}, transparent)`,
-                margin: "1rem auto",
-              }}
-            />
-
-            <div
-              style={{
-                fontFamily: "'Inter', sans-serif",
-                fontWeight: 300,
-                fontSize: "0.85rem",
-                color: COLORS.muted,
-              }}
-            >
-              Enter your gallery password to view your photos.
-            </div>
-          </div>
-
-          <div
-            style={{ display: "flex", flexDirection: "column", gap: "1rem" }}
-          >
-            <input
-              type="password"
-              placeholder="Gallery password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && handlePassword()}
-              style={{
-                background: "transparent",
-                border: `1px solid ${COLORS.border}`,
-                padding: "14px 16px",
-                color: COLORS.white,
-                fontFamily: "'Inter', sans-serif",
-                fontWeight: 300,
-                fontSize: "0.9rem",
-                outline: "none",
-                width: "100%",
-                boxSizing: "border-box",
-              }}
-              onFocus={(event) => {
-                event.target.style.borderColor = COLORS.gold;
-              }}
-              onBlur={(event) => {
-                event.target.style.borderColor = COLORS.border;
-              }}
-            />
-
-            {error && (
-              <div
-                style={{
-                  fontFamily: "'Inter', sans-serif",
-                  fontSize: "0.82rem",
-                  color: "#e05c5c",
-                }}
-              >
-                {error}
-              </div>
-            )}
-
-            <button
-              type="button"
-              onClick={handlePassword}
-              style={{
-                fontFamily: "'Inter', sans-serif",
-                fontSize: "11px",
-                letterSpacing: "0.14em",
-                textTransform: "uppercase",
-                fontWeight: 500,
-                color: COLORS.bg,
-                background: COLORS.gold,
-                border: "none",
-                padding: "14px",
-                cursor: "pointer",
-                width: "100%",
-              }}
-            >
-              View Gallery
-            </button>
-          </div>
-
-          <div style={{ textAlign: "center", marginTop: "2rem" }}>
-            <a
-              href="https://estanleravisuals.com"
-              style={{
-                fontFamily: "'Inter', sans-serif",
-                fontSize: "10px",
-                letterSpacing: "0.15em",
-                textTransform: "uppercase",
-                color: COLORS.muted,
-                textDecoration: "none",
-                opacity: 0.5,
-              }}
-            >
-              Estanler A Visuals
-            </a>
-          </div>
-        </div>
+        {formatDate(gallery.event_date)}
       </div>
-    );
-  }
-
-  const lightboxIndex = lightbox
-    ? photos.findIndex((photo) => photo.id === lightbox.id)
-    : -1;
-
-  return (
-    <div style={{ background: COLORS.bg, minHeight: "100vh" }}>
-      <div
+      <h1
         style={{
-          background: "rgba(10,10,10,0.95)",
-          borderBottom: `1px solid ${COLORS.border}`,
-          padding: "1rem clamp(1.5rem, 5vw, 3rem)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          position: "sticky",
-          top: 0,
-          zIndex: 50,
-          backdropFilter: "blur(12px)",
+          fontFamily: typeTheme.family,
+          fontSize: options.titleSize || "clamp(2.55rem, 8vw, 6.4rem)",
+          fontWeight: typeTheme.weight,
+          letterSpacing: typeTheme.spacing,
+          lineHeight: 0.98,
+          margin: 0,
+          overflowWrap: "anywhere",
+          textTransform: typeTheme.transform,
         }}
       >
-        <div>
-          <div
-            style={{
-              fontFamily: "'Playfair Display', serif",
-              fontWeight: 600,
-              fontSize: "1.1rem",
-              color: COLORS.white,
-            }}
-          >
-            {gallery.title}
-          </div>
-
-          <div
-            style={{
-              fontFamily: "'Inter', sans-serif",
-              fontSize: "11px",
-              color: COLORS.muted,
-              marginTop: "2px",
-            }}
-          >
-            {photos.length} photos
-            {favorites.size > 0 && ` · ${favorites.size} favorited`}
-            {gallery.max_downloads > 0 &&
-              ` · ${downloadCount}/${gallery.max_downloads} downloads used`}
-          </div>
-        </div>
-
-        <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
-          {favorites.size > 0 && (
-            <div
-              style={{
-                fontFamily: "'Inter', sans-serif",
-                fontSize: "10px",
-                letterSpacing: "0.1em",
-                textTransform: "uppercase",
-                color: COLORS.gold,
-              }}
-            >
-              ♥ {favorites.size} favorited
-            </div>
-          )}
-
-          {canDownload() && (
-            <button
-              type="button"
-              onClick={downloadAll}
-              style={{
-                fontFamily: "'Inter', sans-serif",
-                fontSize: "10px",
-                letterSpacing: "0.1em",
-                textTransform: "uppercase",
-                color: COLORS.bg,
-                background: COLORS.gold,
-                border: "none",
-                padding: "8px 16px",
-                cursor: "pointer",
-              }}
-            >
-              Download All
-            </button>
-          )}
-        </div>
-      </div>
-
-      {photos.length === 0 ? (
+        {gallery.title}
+      </h1>
+      {gallery.client_name && (
         <div
           style={{
-            padding: "4rem",
-            textAlign: "center",
-            fontFamily: "'Inter', sans-serif",
-            fontSize: "0.9rem",
-            color: COLORS.muted,
+            fontFamily: shellFont,
+            fontSize: options.clientSize || 13,
+            letterSpacing: "0.14em",
+            marginTop: "1.1rem",
+            textTransform: "uppercase",
           }}
         >
-          No photos uploaded yet. Check back soon.
-        </div>
-      ) : (
-        <div
-          style={{ padding: "1.5rem", columns: "3 240px", columnGap: "8px" }}
-        >
-          {photos.map((photo) => {
-            const thumbUrl = `${BASE_GALLERY}/${photo.storage_path.replace(
-              "/originals/",
-              "/thumbnails/",
-            )}`;
-            const isFavorite = favorites.has(photo.id);
-
-            return (
-              <div
-                key={photo.id}
-                style={{
-                  breakInside: "avoid",
-                  marginBottom: "8px",
-                  position: "relative",
-                  overflow: "hidden",
-                  background: "#111",
-                  cursor: "pointer",
-                }}
-                onMouseEnter={(event) => {
-                  const overlay = event.currentTarget.querySelector(".gov");
-                  const image = event.currentTarget.querySelector(".gimg");
-
-                  if (overlay) overlay.style.opacity = "1";
-                  if (image) image.style.transform = "scale(1.04)";
-                }}
-                onMouseLeave={(event) => {
-                  const overlay = event.currentTarget.querySelector(".gov");
-                  const image = event.currentTarget.querySelector(".gimg");
-
-                  if (overlay) overlay.style.opacity = "0";
-                  if (image) image.style.transform = "scale(1)";
-                }}
-              >
-                <img
-                  className="gimg"
-                  src={thumbUrl}
-                  alt={photo.filename}
-                  loading="lazy"
-                  onClick={() => setLightbox(photo)}
-                  style={{
-                    width: "100%",
-                    display: "block",
-                    transition: "transform 0.4s ease",
-                  }}
-                  onError={(event) => {
-                    event.currentTarget.src = `${BASE_GALLERY}/${photo.storage_path}`;
-                  }}
-                />
-
-                <div
-                  className="gov"
-                  style={{
-                    position: "absolute",
-                    inset: 0,
-                    background:
-                      "linear-gradient(to top, rgba(0,0,0,0.7) 0%, transparent 50%)",
-                    opacity: 0,
-                    transition: "opacity 0.3s ease",
-                    display: "flex",
-                    alignItems: "flex-end",
-                    justifyContent: "space-between",
-                    padding: "0.75rem",
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      handleDownloadClick(photo);
-                    }}
-                    style={{
-                      fontFamily: "'Inter', sans-serif",
-                      fontSize: "10px",
-                      letterSpacing: "0.1em",
-                      textTransform: "uppercase",
-                      color: COLORS.bg,
-                      background: COLORS.gold,
-                      border: "none",
-                      padding: "6px 12px",
-                      cursor: "pointer",
-                    }}
-                  >
-                    Download
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      toggleFavorite(photo.id);
-                    }}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      cursor: "pointer",
-                      fontSize: "1.4rem",
-                      color: isFavorite ? COLORS.gold : COLORS.white,
-                      transition: "color 0.2s",
-                      lineHeight: 1,
-                    }}
-                  >
-                    {isFavorite ? "♥" : "♡"}
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+          {gallery.client_name}
         </div>
       )}
+    </div>
+  );
 
-      {lightbox && !lightbox.awaitPin && (
+  const viewButton = (variant = "light") => (
+    <button
+      type="button"
+      onClick={scrollToPhotos}
+      style={{
+        background: variant === "dark" ? "rgba(0,0,0,0.12)" : "rgba(255,255,255,0.11)",
+        border: `1px solid ${variant === "dark" ? "rgba(0,0,0,0.28)" : "rgba(255,255,255,0.65)"}`,
+        color: variant === "dark" ? "#111" : "#fff",
+        cursor: "pointer",
+        fontFamily: shellFont,
+        fontSize: 11,
+        fontWeight: 800,
+        letterSpacing: "0.16em",
+        marginTop: "2.2rem",
+        padding: "0.95rem 1.6rem",
+        textTransform: "uppercase",
+      }}
+    >
+      View Gallery
+    </button>
+  );
+
+  const renderHero = () => {
+    const heroHeight = "min(92vh, 860px)";
+    const compactTitle = {
+      titleSize: "clamp(2rem, 4.4vw, 3.7rem)",
+      maxWidth: 520,
+      dateSize: 11,
+      clientSize: 12,
+    };
+
+    if (coverStyle === "novel") {
+      return (
+        <section
+          style={{
+            minHeight: heroHeight,
+            background: "#fff",
+            color: "#111",
+            display: "grid",
+            gridTemplateColumns: "minmax(280px, 42%) minmax(0, 58%)",
+            border: "clamp(14px, 2vw, 28px) solid #fff",
+            boxSizing: "border-box",
+          }}
+        >
+          <div style={{ display: "grid", placeItems: "center", padding: "clamp(2rem, 5vw, 5rem)" }}>
+            <div>{titleBlock("left", "#111", compactTitle)}{viewButton("dark")}</div>
+          </div>
+          <div style={{ ...coverBackground, minHeight: 420 }} />
+        </section>
+      );
+    }
+
+    if (coverStyle === "journal") {
+      return (
+        <section
+          style={{
+            minHeight: heroHeight,
+            background: "#fff",
+            color: "#111",
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 62%) minmax(280px, 38%)",
+          }}
+        >
+          <div style={{ ...coverBackground, minHeight: 420 }} />
+          <div style={{ display: "grid", placeItems: "center", padding: "clamp(2rem, 4vw, 4rem)" }}>
+            <div>{titleBlock("left", "#111", compactTitle)}{viewButton("dark")}</div>
+          </div>
+        </section>
+      );
+    }
+
+    if (coverStyle === "minimal") {
+      return (
+        <section
+          style={{
+            minHeight: heroHeight,
+            background: "#fff",
+            color: "#111",
+            display: "grid",
+            placeItems: "center",
+            padding: "clamp(2rem, 5vw, 5rem)",
+            boxSizing: "border-box",
+            textAlign: "center",
+          }}
+        >
+          <div style={{ width: "min(760px, 100%)" }}>
+            <div
+              style={{
+                ...coverBackground,
+                width: "min(300px, 64vw)",
+                aspectRatio: "1 / 1",
+                margin: "0 auto 2rem",
+              }}
+            />
+            {titleBlock("center", "#111", { titleSize: "clamp(2rem, 6vw, 4.25rem)" })}
+            {viewButton("dark")}
+          </div>
+        </section>
+      );
+    }
+
+    if (coverStyle === "split") {
+      return (
+        <section
+          style={{
+            minHeight: heroHeight,
+            background: "#101010",
+            color: "#fff",
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1fr) minmax(280px, 1fr)",
+          }}
+        >
+          <div style={{ ...coverBackground, minHeight: 420 }} />
+          <div style={{ display: "grid", placeItems: "center", padding: "clamp(2rem, 5vw, 5rem)" }}>
+            <div>{titleBlock("left", "#fff", compactTitle)}{viewButton()}</div>
+          </div>
+        </section>
+      );
+    }
+
+    if (coverStyle === "vintage") {
+      return (
+        <section
+          style={{
+            minHeight: heroHeight,
+            background: "#252525",
+            padding: "clamp(1rem, 2.5vw, 2rem)",
+            boxSizing: "border-box",
+            display: "grid",
+            gridTemplateRows: "minmax(360px, 1fr) auto",
+          }}
+        >
+          <div style={{ ...coverBackground, minHeight: 360 }} />
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "minmax(140px, 1fr) minmax(0, auto) minmax(140px, 1fr)",
+              alignItems: "center",
+              gap: "1.5rem",
+              color: "#fff",
+              padding: "clamp(1.3rem, 3vw, 2rem) 0.5rem 0.35rem",
+            }}
+          >
+            <div style={{ fontFamily: shellFont, fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase", opacity: 0.78 }}>
+              {BRAND_NAME}
+            </div>
+            {titleBlock("center", "#fff", { titleSize: "clamp(1.8rem, 4vw, 3.45rem)", maxWidth: 720 })}
+            <div style={{ textAlign: "right" }}>{viewButton()}</div>
+          </div>
+        </section>
+      );
+    }
+
+    if (coverStyle === "divider") {
+      return (
+        <section
+          style={{
+            minHeight: heroHeight,
+            ...coverBackground,
+            display: "flex",
+            alignItems: "stretch",
+            justifyContent: "flex-start",
+          }}
+        >
+          <div
+            style={{
+              width: "min(520px, 46vw)",
+              minHeight: heroHeight,
+              background: "rgba(0,0,0,0.55)",
+              backdropFilter: "blur(1px)",
+              display: "grid",
+              placeItems: "center",
+              padding: "clamp(2rem, 5vw, 4rem)",
+              boxSizing: "border-box",
+            }}
+          >
+            <div style={{ textAlign: "center" }}>
+              {titleBlock("center", "#fff", { titleSize: "clamp(1.8rem, 4vw, 3.3rem)", maxWidth: 430 })}
+              {viewButton()}
+            </div>
+          </div>
+        </section>
+      );
+    }
+
+    const hasTint = ["center", "left", "stripe"].includes(coverStyle);
+    const alignItems = coverStyle === "stripe" ? "center" : "flex-end";
+    const justifyContent = coverStyle === "left" ? "flex-start" : "center";
+    const textAlign = coverStyle === "left" ? "left" : "center";
+
+    return (
+      <section
+        style={{
+          minHeight: heroHeight,
+          ...coverBackground,
+          position: "relative",
+          display: "flex",
+          alignItems,
+          justifyContent,
+          padding: "clamp(2rem, 6vw, 6rem)",
+          boxSizing: "border-box",
+          overflow: "hidden",
+        }}
+      >
+        {hasTint && <span style={{ position: "absolute", inset: 0, background: "linear-gradient(90deg, rgba(0,0,0,0.48), rgba(0,0,0,0.22))" }} />}
+        {coverStyle === "stripe" && <span style={{ position: "absolute", left: "12%", right: "12%", top: "50%", height: 1, background: "rgba(255,255,255,0.72)" }} />}
+        {coverStyle === "frame" && <span style={{ position: "absolute", inset: "clamp(1.25rem, 4vw, 3.2rem)", border: "2px solid rgba(255,255,255,0.9)", boxShadow: "0 0 0 1px rgba(0,0,0,0.2), inset 0 0 0 1px rgba(0,0,0,0.2)" }} />}
+        <div style={{ position: "relative", zIndex: 1, textAlign }}>
+          <div style={{ fontFamily: shellFont, fontSize: 11, letterSpacing: "0.2em", marginBottom: "clamp(4rem, 16vh, 9rem)", textTransform: "uppercase", color: "#fff" }}>
+            {BRAND_NAME}
+          </div>
+          {titleBlock(textAlign, "#fff")}
+          {viewButton()}
+        </div>
+      </section>
+    );
+  };
+
+  const PhotoCard = ({ photo, mode = "masonry", index = 0 }) => {
+    const thumbnailUrl = getPhotoUrl(photo, "thumbnail");
+    const displayUrl = getPhotoUrl(photo, "display");
+    const isFavorite = favorites.has(photo.id);
+    const hovered = hoveredPhotoId === photo.id;
+    const isSquare = mode === "square";
+    const isMosaicFeature = mode === "mosaic" && index % 7 === 0;
+
+    return (
+      <article
+        onMouseEnter={() => setHoveredPhotoId(photo.id)}
+        onMouseLeave={() => setHoveredPhotoId(null)}
+        style={{
+          breakInside: "avoid",
+          marginBottom: mode === "clean" || mode === "editorial" ? 18 : 8,
+          position: "relative",
+          overflow: "hidden",
+          background: "#111",
+          cursor: "zoom-in",
+          gridColumn: isMosaicFeature ? "span 2" : undefined,
+          gridRow: isMosaicFeature ? "span 2" : undefined,
+          aspectRatio: isSquare || mode === "mosaic" ? "1 / 1" : undefined,
+        }}
+      >
+        <img
+          src={thumbnailUrl || displayUrl}
+          alt={photo.alt_text || photo.title || photo.file_name || "Gallery photo"}
+          loading="lazy"
+          onClick={() => setLightbox(photo)}
+          onError={(event) => {
+            if (displayUrl && event.currentTarget.src !== displayUrl) {
+              event.currentTarget.src = displayUrl;
+            }
+          }}
+          style={{
+            width: "100%",
+            height: isSquare || mode === "mosaic" ? "100%" : "auto",
+            objectFit: isSquare || mode === "mosaic" ? "cover" : "cover",
+            display: "block",
+            transform: hovered ? "scale(1.035)" : "scale(1)",
+            transition: "transform 0.45s ease",
+          }}
+        />
         <div
           style={{
-            position: "fixed",
+            position: "absolute",
             inset: 0,
-            zIndex: 200,
-            background: "rgba(0,0,0,0.97)",
+            background: "linear-gradient(to top, rgba(0,0,0,0.74), rgba(0,0,0,0.06) 58%, transparent)",
+            opacity: hovered ? 1 : 0,
+            transition: "opacity 0.25s ease",
             display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
+            alignItems: "flex-end",
+            justifyContent: "space-between",
+            gap: "0.75rem",
+            padding: "0.8rem",
           }}
         >
           <button
             type="button"
-            onClick={() => setLightbox(null)}
+            onClick={(event) => {
+              event.stopPropagation();
+              setLightbox(photo);
+            }}
             style={{
-              position: "absolute",
-              top: "1.5rem",
-              right: "1.5rem",
-              background: "none",
-              border: "none",
-              color: COLORS.white,
-              fontSize: "1.5rem",
+              background: "rgba(255,255,255,0.14)",
+              border: "1px solid rgba(255,255,255,0.36)",
+              color: "#fff",
               cursor: "pointer",
+              fontFamily: shellFont,
+              fontSize: 10,
+              fontWeight: 800,
+              letterSpacing: "0.12em",
+              padding: "0.55rem 0.75rem",
+              textTransform: "uppercase",
             }}
           >
-            ✕
+            View
           </button>
-
-          {lightboxIndex > 0 && (
+          <div style={{ display: "flex", gap: 8 }}>
             <button
               type="button"
-              onClick={() => setLightbox(photos[lightboxIndex - 1])}
-              style={{
-                position: "absolute",
-                left: "1.5rem",
-                background: "none",
-                border: "none",
-                color: COLORS.white,
-                fontSize: "2.5rem",
-                cursor: "pointer",
+              onClick={(event) => {
+                event.stopPropagation();
+                sharePhoto(photo);
               }}
+              style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer", fontSize: "1.1rem" }}
+              title="Share photo"
             >
-              ‹
+              ↗
             </button>
-          )}
-
-          <img
-            src={`${BASE_GALLERY}/${lightbox.storage_path}`}
-            alt={lightbox.filename}
-            style={{
-              maxWidth: "90vw",
-              maxHeight: "88vh",
-              objectFit: "contain",
-            }}
-          />
-
-          {lightboxIndex < photos.length - 1 && (
             <button
               type="button"
-              onClick={() => setLightbox(photos[lightboxIndex + 1])}
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleFavorite(photo.id);
+              }}
+              style={{ background: "transparent", border: "none", color: isFavorite ? themeColor : "#fff", cursor: "pointer", fontSize: "1.35rem", lineHeight: 1 }}
+              title="Favorite photo"
+            >
+              {isFavorite ? "♥" : "♡"}
+            </button>
+          </div>
+        </div>
+      </article>
+    );
+  };
+
+  const renderSectionPhotos = (section, items) => {
+    if (!items.length) {
+      return <div style={{ color: "#777", fontFamily: shellFont, fontSize: 14 }}>No photos in this set yet.</div>;
+    }
+
+    if (gridStyle === "square") {
+      return (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: 10 }}>
+          {items.map((photo, index) => <PhotoCard key={photo.id} photo={photo} mode="square" index={index} />)}
+        </div>
+      );
+    }
+
+    if (gridStyle === "horizontal") {
+      return (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14 }}>
+          {items.map((photo, index) => <PhotoCard key={photo.id} photo={photo} mode="horizontal" index={index} />)}
+        </div>
+      );
+    }
+
+    if (gridStyle === "mosaic") {
+      return (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gridAutoRows: 170, gap: 10 }}>
+          {items.map((photo, index) => <PhotoCard key={photo.id} photo={photo} mode="mosaic" index={index} />)}
+        </div>
+      );
+    }
+
+    if (gridStyle === "filmstrip") {
+      return (
+        <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 12 }}>
+          {items.map((photo, index) => (
+            <div key={photo.id} style={{ flex: "0 0 min(74vw, 420px)" }}>
+              <PhotoCard photo={photo} mode="filmstrip" index={index} />
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    const columnCount = gridStyle === "vertical" ? "2 300px" : gridStyle === "clean" ? "4 220px" : gridStyle === "editorial" ? "3 280px" : "3 240px";
+    return (
+      <div style={{ columns: columnCount, columnGap: gridStyle === "editorial" || gridStyle === "clean" ? 18 : 8 }}>
+        {items.map((photo, index) => <PhotoCard key={photo.id} photo={photo} mode={gridStyle} index={index} />)}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f4f2ee", color: "#111" }}>
+      {renderHero()}
+
+      <header
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 70,
+          background: "rgba(255,255,255,0.94)",
+          borderBottom: "1px solid rgba(0,0,0,0.08)",
+          backdropFilter: "blur(14px)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "1rem",
+          padding: "0.9rem clamp(1rem, 4vw, 3rem)",
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontFamily: displayFont, fontSize: "1.1rem", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {gallery.title}
+          </div>
+          <div style={{ color: "#777", fontFamily: shellFont, fontSize: 12, marginTop: 2 }}>
+            {visiblePhotoCount} photo{visiblePhotoCount === 1 ? "" : "s"}
+            {favorites.size > 0 ? ` · ${favorites.size} favorite${favorites.size === 1 ? "" : "s"}` : ""}
+          </div>
+        </div>
+
+        <nav style={{ display: "flex", gap: "0.4rem", overflowX: "auto", maxWidth: "42vw" }}>
+          {orderedSections.map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              onClick={() => document.getElementById(`section-${section.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" })}
               style={{
-                position: "absolute",
-                right: "1.5rem",
-                background: "none",
+                background: "transparent",
                 border: "none",
-                color: COLORS.white,
-                fontSize: "2.5rem",
+                color: "#333",
                 cursor: "pointer",
+                fontFamily: shellFont,
+                fontSize: 11,
+                fontWeight: 800,
+                letterSpacing: "0.12em",
+                padding: "0.65rem 0.8rem",
+                textTransform: "uppercase",
+                whiteSpace: "nowrap",
               }}
             >
-              ›
+              {section.title}
             </button>
-          )}
+          ))}
+        </nav>
 
-          <div
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            type="button"
+            onClick={shareGallery}
             style={{
-              position: "absolute",
-              bottom: "1.5rem",
-              left: "50%",
-              transform: "translateX(-50%)",
-              display: "flex",
-              gap: "1rem",
-              alignItems: "center",
+              background: "#111",
+              border: "none",
+              color: "#fff",
+              cursor: "pointer",
+              fontFamily: shellFont,
+              fontSize: 11,
+              fontWeight: 800,
+              letterSpacing: "0.12em",
+              padding: "0.7rem 1rem",
+              textTransform: "uppercase",
             }}
           >
-            <button
-              type="button"
-              onClick={() => toggleFavorite(lightbox.id)}
-              style={{
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                fontSize: "1.5rem",
-                color: favorites.has(lightbox.id) ? COLORS.gold : COLORS.white,
-              }}
-            >
-              {favorites.has(lightbox.id) ? "♥" : "♡"}
-            </button>
+            Share
+          </button>
+        </div>
+      </header>
 
-            <button
-              type="button"
-              onClick={() => handleDownloadClick(lightbox)}
-              style={{
-                fontFamily: "'Inter', sans-serif",
-                fontSize: "11px",
-                letterSpacing: "0.12em",
-                textTransform: "uppercase",
-                fontWeight: 500,
-                color: COLORS.bg,
-                background: COLORS.gold,
-                border: "none",
-                padding: "10px 24px",
-                cursor: "pointer",
-              }}
-            >
-              Download
-            </button>
-
-            <div
-              style={{
-                fontFamily: "'Inter', sans-serif",
-                fontSize: "11px",
-                color: COLORS.muted,
-              }}
-            >
-              {lightboxIndex + 1} / {photos.length}
-            </div>
-          </div>
+      {notice && (
+        <div
+          style={{
+            position: "fixed",
+            top: 82,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 120,
+            background: "#111",
+            color: "#fff",
+            border: `1px solid ${themeColor}`,
+            boxShadow: "0 16px 48px rgba(0,0,0,0.24)",
+            fontFamily: shellFont,
+            fontSize: 13,
+            padding: "0.85rem 1rem",
+          }}
+        >
+          {notice}
         </div>
       )}
 
-      {lightbox?.awaitPin && (
+      <main id="gallery-sections" style={{ padding: "clamp(2rem, 5vw, 4rem) clamp(1rem, 4vw, 3rem)" }}>
+        {orderedSections.length === 0 && (
+          <div style={{ color: "#777", fontFamily: shellFont, padding: "4rem 1rem", textAlign: "center" }}>
+            No visible photo sets yet.
+          </div>
+        )}
+
+        {orderedSections.map((section) => {
+          const items = sectionPhotos(section.id);
+          return (
+            <section id={`section-${section.id}`} key={section.id} style={{ scrollMarginTop: 110, marginBottom: "clamp(3rem, 7vw, 6rem)" }}>
+              <div style={{ display: "flex", alignItems: "end", justifyContent: "space-between", gap: "1rem", marginBottom: "1.25rem" }}>
+                <h2 style={{ fontFamily: displayFont, fontSize: "clamp(2rem, 4vw, 3.3rem)", lineHeight: 1, margin: 0 }}>
+                  {section.title}
+                </h2>
+                <div style={{ color: "#777", fontFamily: shellFont, fontSize: 12, letterSpacing: "0.12em", textTransform: "uppercase" }}>
+                  {items.length} photo{items.length === 1 ? "" : "s"}
+                </div>
+              </div>
+              {renderSectionPhotos(section, items)}
+            </section>
+          );
+        })}
+      </main>
+
+      {lightbox && (
         <div
           style={{
             position: "fixed",
             inset: 0,
-            zIndex: 200,
-            background: "rgba(0,0,0,0.92)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
+            zIndex: 220,
+            background: "rgba(0,0,0,0.96)",
+            color: "#fff",
+            display: "grid",
+            gridTemplateRows: "auto 1fr auto",
           }}
         >
-          <div
-            style={{
-              background: "#0a0a0a",
-              border: `1px solid ${COLORS.border}`,
-              padding: "2rem",
-              width: "100%",
-              maxWidth: "320px",
-              textAlign: "center",
-            }}
-          >
-            <div
-              style={{
-                fontFamily: "'Playfair Display', serif",
-                fontSize: "1.2rem",
-                color: COLORS.white,
-                marginBottom: "0.5rem",
-              }}
-            >
-              Download PIN
-            </div>
-
-            <div
-              style={{
-                fontFamily: "'Inter', sans-serif",
-                fontWeight: 300,
-                fontSize: "0.85rem",
-                color: COLORS.muted,
-                marginBottom: "1.5rem",
-              }}
-            >
-              Enter your download PIN to access this photo.
-            </div>
-
-            <input
-              type="password"
-              placeholder="PIN"
-              value={pin}
-              onChange={(event) => setPin(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && handlePinSubmit()}
-              style={{
-                background: "transparent",
-                border: `1px solid ${pinError ? "#e05c5c" : COLORS.border}`,
-                padding: "12px 16px",
-                color: COLORS.white,
-                fontFamily: "'Inter', sans-serif",
-                fontWeight: 300,
-                fontSize: "1.1rem",
-                outline: "none",
-                width: "100%",
-                boxSizing: "border-box",
-                textAlign: "center",
-                letterSpacing: "0.3em",
-                marginBottom: "0.75rem",
-              }}
-            />
-
-            {pinError && (
-              <div
-                style={{
-                  fontFamily: "'Inter', sans-serif",
-                  fontSize: "0.8rem",
-                  color: "#e05c5c",
-                  marginBottom: "0.75rem",
-                }}
-              >
-                Incorrect PIN
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem", padding: "1rem clamp(1rem, 3vw, 2rem)" }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontFamily: shellFont, fontSize: 12, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(255,255,255,0.62)" }}>
+                {lightboxIndex + 1} / {orderedPhotos.length}
               </div>
-            )}
-
-            <div style={{ display: "flex", gap: "0.75rem" }}>
-              <button
-                type="button"
-                onClick={handlePinSubmit}
-                style={{
-                  flex: 1,
-                  fontFamily: "'Inter', sans-serif",
-                  fontSize: "11px",
-                  letterSpacing: "0.12em",
-                  textTransform: "uppercase",
-                  fontWeight: 500,
-                  color: COLORS.bg,
-                  background: COLORS.gold,
-                  border: "none",
-                  padding: "12px",
-                  cursor: "pointer",
-                }}
-              >
-                Download
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setLightbox(null)}
-                style={{
-                  fontFamily: "'Inter', sans-serif",
-                  fontSize: "11px",
-                  letterSpacing: "0.12em",
-                  textTransform: "uppercase",
-                  color: COLORS.muted,
-                  background: "transparent",
-                  border: `1px solid ${COLORS.border}`,
-                  padding: "12px 16px",
-                  cursor: "pointer",
-                }}
-              >
-                Cancel
-              </button>
+              <div style={{ fontFamily: displayFont, fontSize: "1.2rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {lightbox.title || lightbox.file_name || gallery.title}
+              </div>
             </div>
+            <button type="button" onClick={() => setLightbox(null)} style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer", fontSize: 26 }}>×</button>
+          </div>
+
+          <div style={{ position: "relative", display: "grid", placeItems: "center", minHeight: 0, padding: "0 4rem" }}>
+            {lightboxIndex > 0 && (
+              <button type="button" onClick={() => goLightbox(-1)} style={{ position: "absolute", left: "1rem", background: "transparent", border: "none", color: "#fff", cursor: "pointer", fontSize: "3rem" }}>‹</button>
+            )}
+            <img
+              src={getPhotoUrl(lightbox, "display")}
+              alt={lightbox.alt_text || lightbox.title || lightbox.file_name || "Gallery photo"}
+              style={{ maxWidth: "100%", maxHeight: "78vh", objectFit: "contain", display: "block" }}
+            />
+            {lightboxIndex < orderedPhotos.length - 1 && (
+              <button type="button" onClick={() => goLightbox(1)} style={{ position: "absolute", right: "1rem", background: "transparent", border: "none", color: "#fff", cursor: "pointer", fontSize: "3rem" }}>›</button>
+            )}
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "0.8rem", padding: "1rem" }}>
+            <button type="button" onClick={() => toggleFavorite(lightbox.id)} style={{ background: "transparent", border: "none", color: favorites.has(lightbox.id) ? themeColor : "#fff", cursor: "pointer", fontSize: "1.7rem", lineHeight: 1 }}>
+              {favorites.has(lightbox.id) ? "♥" : "♡"}
+            </button>
+            <button type="button" onClick={() => sharePhoto(lightbox)} style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.28)", color: "#fff", cursor: "pointer", fontFamily: shellFont, fontSize: 11, fontWeight: 800, letterSpacing: "0.12em", padding: "0.75rem 1rem", textTransform: "uppercase" }}>
+              Share
+            </button>
+            <button type="button" onClick={() => downloadPhoto(lightbox)} style={{ background: themeColor, border: "none", color: "#111", cursor: "pointer", fontFamily: shellFont, fontSize: 11, fontWeight: 900, letterSpacing: "0.12em", padding: "0.75rem 1rem", textTransform: "uppercase" }}>
+              Download
+            </button>
           </div>
         </div>
       )}
 
-      <div
-        style={{
-          textAlign: "center",
-          padding: "2rem",
-          borderTop: `1px solid ${COLORS.border}`,
-        }}
-      >
+      <footer style={{ borderTop: "1px solid rgba(0,0,0,0.08)", padding: "2.5rem 1rem", textAlign: "center" }}>
         <a
-          href="https://estanleravisuals.com"
+          href="/"
           style={{
-            fontFamily: "'Inter', sans-serif",
-            fontSize: "10px",
-            letterSpacing: "0.15em",
-            textTransform: "uppercase",
-            color: COLORS.muted,
+            color: "#777",
+            fontFamily: shellFont,
+            fontSize: 10,
+            fontWeight: 800,
+            letterSpacing: "0.16em",
             textDecoration: "none",
-            opacity: 0.4,
+            textTransform: "uppercase",
           }}
         >
-          Estanler A Visuals
+          {BRAND_NAME}
         </a>
-      </div>
+      </footer>
     </div>
   );
 }
