@@ -9,7 +9,7 @@ import Services from "./pages/Services";
 import About from "./pages/About";
 import Book from "./pages/Book";
 import Shop from "./pages/Shop";
-import Gallery from "./pages/Gallery";
+import PublicGalleryViewer from "./pages/PublicGalleryViewer";
 
 import AdminLogin from "./pages/admin/Login";
 import Dashboard from "./pages/admin/Dashboard";
@@ -68,7 +68,7 @@ function Layout() {
         <Route path="/about" element={<About />} />
         <Route path="/book" element={<Book />} />
         <Route path="/shop" element={<Shop />} />
-        <Route path="/gallery/:slug" element={<Gallery />} />
+        <Route path="/gallery/:slug" element={<PublicGalleryViewer />} />
 
         <Route path="/admin/login" element={<AdminLogin />} />
 
