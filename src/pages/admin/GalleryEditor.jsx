@@ -111,6 +111,9 @@ function photoName(photo) {
 function photoUploadTime(photo) {
   return new Date(photo?.uploaded_at || photo?.created_at || 0).getTime() || 0;
 }
+function samePhotoOrder(a, b) {
+  return a.length === b.length && a.every((photo, index) => photo.id === b[index]?.id);
+}
 
 async function resizeImage(file, maxSize, quality = 0.82) {
   const objectUrl = URL.createObjectURL(file);
@@ -257,6 +260,30 @@ export default function GalleryEditor() {
     setGridMenuOpen(false);
   }
 
+  function applyLocalPhotoOrder(orderedPhotos) {
+    const orderedById = orderedPhotos.reduce((map, photo, index) => ({ ...map, [photo.id]: { ...photo, display_order: index } }), {});
+    setPhotos((current) => sortByOrder(current.map((photo) => orderedById[photo.id] || photo)));
+  }
+
+  function getDraggedOrder(dropTargetId, sourceOrder = activeSectionPhotos) {
+    if (!draggedPhotoId || !activeSection) return null;
+    const draggedIsSelected = selectedPhotoIds.includes(draggedPhotoId);
+    const movingIds = draggedIsSelected && selectedPhotoIds.length > 1 ? selectedPhotoIds : [draggedPhotoId];
+    const movingSet = new Set(movingIds);
+    if (movingSet.has(dropTargetId)) return null;
+    const movingPhotos = sourceOrder.filter((photo) => movingSet.has(photo.id));
+    const remainingPhotos = sourceOrder.filter((photo) => !movingSet.has(photo.id));
+    const dropIndex = remainingPhotos.findIndex((photo) => photo.id === dropTargetId);
+    if (dropIndex < 0 || movingPhotos.length === 0) return null;
+    return [...remainingPhotos.slice(0, dropIndex), ...movingPhotos, ...remainingPhotos.slice(dropIndex)];
+  }
+
+  function previewDraggedPhoto(dropTargetId) {
+    const nextOrder = getDraggedOrder(dropTargetId);
+    if (!nextOrder || samePhotoOrder(nextOrder, activeSectionPhotos)) return;
+    applyLocalPhotoOrder(nextOrder);
+  }
+
   function togglePhotoSelection(photoId, event) {
     closeWorkspaceMenus();
     if (event?.shiftKey && selectionAnchorId) {
@@ -277,10 +304,12 @@ export default function GalleryEditor() {
     setSelectionAnchorId(photoId);
   }
 
-  async function persistPhotoOrder(orderedPhotos) {
-    const results = await Promise.all(orderedPhotos.map((photo, index) => supabase.from("client_gallery_images").update({ display_order: index }).eq("id", photo.id).select("*").single()));
+  async function persistPhotoOrder(orderedPhotos, { optimistic = true } = {}) {
+    const normalizedOrder = orderedPhotos.map((photo, index) => ({ ...photo, display_order: index }));
+    if (optimistic) applyLocalPhotoOrder(normalizedOrder);
+    const results = await Promise.all(normalizedOrder.map((photo, index) => supabase.from("client_gallery_images").update({ display_order: index }).eq("id", photo.id).select("*").single()));
     const failed = results.find((result) => result.error);
-    if (failed) { setError(failed.error.message); return false; }
+    if (failed) { setError(failed.error.message); loadWorkspace(); return false; }
     const updatedById = results.reduce((map, result) => ({ ...map, [result.data.id]: result.data }), {});
     setPhotos((current) => sortByOrder(current.map((photo) => updatedById[photo.id] || photo)));
     return true;
@@ -299,37 +328,33 @@ export default function GalleryEditor() {
   }
 
   async function reorderDraggedPhoto(dropTargetId) {
-    if (!draggedPhotoId || !activeSection) return;
-    const draggedIsSelected = selectedPhotoIds.includes(draggedPhotoId);
-    const movingIds = draggedIsSelected && selectedPhotoIds.length > 1 ? selectedPhotoIds : [draggedPhotoId];
-    const movingSet = new Set(movingIds);
-    if (movingSet.has(dropTargetId)) {
-      setDraggedPhotoId(null);
-      return;
-    }
-    const movingPhotos = activeSectionPhotos.filter((photo) => movingSet.has(photo.id));
-    const remainingPhotos = activeSectionPhotos.filter((photo) => !movingSet.has(photo.id));
-    const dropIndex = remainingPhotos.findIndex((photo) => photo.id === dropTargetId);
-    if (dropIndex < 0 || movingPhotos.length === 0) return;
-    const nextOrder = [...remainingPhotos.slice(0, dropIndex), ...movingPhotos, ...remainingPhotos.slice(dropIndex)];
+    const nextOrder = getDraggedOrder(dropTargetId) || activeSectionPhotos;
     setDraggedPhotoId(null);
-    if (await persistPhotoOrder(nextOrder)) flash(movingPhotos.length > 1 ? "Selected photos moved." : "Photo order updated.");
+    if (!nextOrder.length) return;
+    if (await persistPhotoOrder(nextOrder, { optimistic: false })) {
+      const movingCount = selectedPhotoIds.includes(draggedPhotoId) ? selectedPhotoIds.length : 1;
+      flash(movingCount > 1 ? "Selected photos moved." : "Photo order updated.");
+    }
   }
 
-  async function moveSelectedByStep(direction) {
-    if (!selectedPhotoIds.length || !activeSection) return;
-    const selectedSet = new Set(selectedPhotoIds);
+  async function movePhotoIdsByStep(photoIds, direction) {
+    const cleanIds = photoIds.filter(Boolean);
+    if (!cleanIds.length || !activeSection) return;
+    const selectedSet = new Set(cleanIds);
     const selectedIndexes = activeSectionPhotos.map((photo, index) => selectedSet.has(photo.id) ? index : -1).filter((index) => index >= 0);
     if (!selectedIndexes.length) return;
     const selected = activeSectionPhotos.filter((photo) => selectedSet.has(photo.id));
     const remaining = activeSectionPhotos.filter((photo) => !selectedSet.has(photo.id));
     const firstSelectedIndex = Math.min(...selectedIndexes);
-    const lastSelectedIndex = Math.max(...selectedIndexes);
-    const insertIndex = direction === "up"
-      ? Math.max(0, firstSelectedIndex - 1)
-      : Math.min(remaining.length, lastSelectedIndex - selected.length + 2);
-    if (await persistPhotoOrder([...remaining.slice(0, insertIndex), ...selected, ...remaining.slice(insertIndex)])) flash(direction === "up" ? "Moved selected photos up." : "Moved selected photos down.");
+    const insertIndex = direction === "up" ? Math.max(0, firstSelectedIndex - 1) : Math.min(remaining.length, firstSelectedIndex + 1);
+    const nextOrder = [...remaining.slice(0, insertIndex), ...selected, ...remaining.slice(insertIndex)];
+    if (samePhotoOrder(nextOrder, activeSectionPhotos)) return;
+    if (await persistPhotoOrder(nextOrder)) flash(direction === "up" ? "Moved selected photos up." : "Moved selected photos down.");
     setActionMenuOpen(false);
+  }
+
+  async function moveSelectedByStep(direction) {
+    await movePhotoIdsByStep(selectedPhotoIds, direction);
   }
 
   async function saveGallery() {
@@ -464,7 +489,7 @@ export default function GalleryEditor() {
   }
 
   function renderListWorkspace() {
-    return <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{activeSectionPhotos.map((photo, index) => { const selected = selectedPhotoIds.includes(photo.id); const isCover = gallery.cover_image_id === photo.id; return <article key={photo.id} draggable onDragStart={() => setDraggedPhotoId(photo.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); reorderDraggedPhoto(photo.id); }} onClick={(event) => togglePhotoSelection(photo.id, event)} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ photoId: photo.id, x: event.clientX, y: event.clientY }); if (!selectedPhotoIds.includes(photo.id)) { setSelectedPhotoIds([photo.id]); setSelectionAnchorId(photo.id); } }} style={{ display: "grid", gridTemplateColumns: "56px 86px minmax(0, 1fr) 130px 160px", alignItems: "center", gap: 14, background: selected ? "rgba(0,184,148,0.08)" : "#fff", border: `2px solid ${selected ? "#00b894" : isCover ? COLORS.gold : "#eee"}`, padding: "0.6rem", cursor: "grab", userSelect: "none" }}><div style={{ color: "#999", fontFamily: "'Inter', sans-serif", fontSize: 12, textAlign: "center" }}>#{index + 1}</div><div style={{ width: 76, height: 54, background: "#f2f2f2", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}><img src={getPhotoPreviewUrl(photo)} alt={photo.alt_text || photo.title || "Gallery photo"} style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} /></div><div style={{ minWidth: 0 }}><div style={{ color: "#222", fontFamily: "'Inter', sans-serif", fontSize: 13, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{photo.file_name || photo.title || photo.id}</div><div style={{ color: "#999", fontFamily: "'Inter', sans-serif", fontSize: 11, marginTop: 4 }}>{photo.mime_type || "image"}</div></div><div style={{ color: isCover ? COLORS.gold : "#aaa", fontFamily: "'Inter', sans-serif", fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase" }}>{isCover ? "Cover" : "Gallery Photo"}</div><div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}><button type="button" onClick={(event) => { event.stopPropagation(); setSelectedPhotoIds([photo.id]); setSelectionAnchorId(photo.id); setCoverImage(photo.id); }} style={{ ...buttonStyle, color: "#111", borderColor: "#ddd", padding: "7px 8px" }}>Cover</button><button type="button" onClick={(event) => { event.stopPropagation(); setSelectedPhotoIds([photo.id]); setSelectionAnchorId(photo.id); moveSelectedByStep("up"); }} style={{ ...buttonStyle, color: "#111", borderColor: "#ddd", padding: "7px 8px" }}>↑</button><button type="button" onClick={(event) => { event.stopPropagation(); setSelectedPhotoIds([photo.id]); setSelectionAnchorId(photo.id); moveSelectedByStep("down"); }} style={{ ...buttonStyle, color: "#111", borderColor: "#ddd", padding: "7px 8px" }}>↓</button></div></article>; })}</div>;
+    return <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{activeSectionPhotos.map((photo, index) => { const selected = selectedPhotoIds.includes(photo.id); const isCover = gallery.cover_image_id === photo.id; return <article key={photo.id} draggable onDragStart={() => setDraggedPhotoId(photo.id)} onDragEnd={() => setDraggedPhotoId(null)} onDragOver={(event) => { event.preventDefault(); previewDraggedPhoto(photo.id); }} onDrop={(event) => { event.preventDefault(); reorderDraggedPhoto(photo.id); }} onClick={(event) => togglePhotoSelection(photo.id, event)} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ photoId: photo.id, x: event.clientX, y: event.clientY }); if (!selectedPhotoIds.includes(photo.id)) { setSelectedPhotoIds([photo.id]); setSelectionAnchorId(photo.id); } }} style={{ display: "grid", gridTemplateColumns: "56px 86px minmax(0, 1fr) 130px 160px", alignItems: "center", gap: 14, background: selected ? "rgba(0,184,148,0.08)" : "#fff", border: `2px solid ${selected ? "#00b894" : isCover ? COLORS.gold : "#eee"}`, padding: "0.6rem", cursor: "grab", userSelect: "none", opacity: draggedPhotoId === photo.id ? 0.68 : 1, transition: "border-color 0.14s ease, box-shadow 0.14s ease, opacity 0.14s ease, transform 0.14s ease" }}><div style={{ color: "#999", fontFamily: "'Inter', sans-serif", fontSize: 12, textAlign: "center" }}>#{index + 1}</div><div style={{ width: 76, height: 54, background: "#f2f2f2", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}><img src={getPhotoPreviewUrl(photo)} alt={photo.alt_text || photo.title || "Gallery photo"} style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} /></div><div style={{ minWidth: 0 }}><div style={{ color: "#222", fontFamily: "'Inter', sans-serif", fontSize: 13, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{photo.file_name || photo.title || photo.id}</div><div style={{ color: "#999", fontFamily: "'Inter', sans-serif", fontSize: 11, marginTop: 4 }}>{photo.mime_type || "image"}</div></div><div style={{ color: isCover ? COLORS.gold : "#aaa", fontFamily: "'Inter', sans-serif", fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase" }}>{isCover ? "Cover" : "Gallery Photo"}</div><div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}><button type="button" onClick={(event) => { event.stopPropagation(); setSelectedPhotoIds([photo.id]); setSelectionAnchorId(photo.id); setCoverImage(photo.id); }} style={{ ...buttonStyle, color: "#111", borderColor: "#ddd", padding: "7px 8px" }}>Cover</button><button type="button" onClick={(event) => { event.stopPropagation(); setSelectedPhotoIds([photo.id]); setSelectionAnchorId(photo.id); movePhotoIdsByStep([photo.id], "up"); }} style={{ ...buttonStyle, color: "#111", borderColor: "#ddd", padding: "7px 8px" }}>↑</button><button type="button" onClick={(event) => { event.stopPropagation(); setSelectedPhotoIds([photo.id]); setSelectionAnchorId(photo.id); movePhotoIdsByStep([photo.id], "down"); }} style={{ ...buttonStyle, color: "#111", borderColor: "#ddd", padding: "7px 8px" }}>↓</button></div></article>; })}</div>;
   }
 
   function renderPhotosWorkspace() {
@@ -474,7 +499,7 @@ export default function GalleryEditor() {
     return <main onClick={closeWorkspaceMenus} style={{ background: "#f4f4f4", color: "#111", height: "calc(100vh - 124px)", overflowY: "auto", overflowX: "hidden", padding: "2rem", position: "relative", boxSizing: "border-box" }}>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "1rem", marginBottom: "1.5rem" }}><div><h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: "1.7rem", margin: 0 }}>{activeSection.title || "Untitled Set"}</h2><p style={{ color: "#777", fontFamily: "'Inter', sans-serif", fontSize: 13, margin: "0.4rem 0 0" }}>{activeSectionPhotos.length} photo{activeSectionPhotos.length === 1 ? "" : "s"} · Select images, then drag one selected image to move the group</p></div>{renderWorkspaceToolbar()}</div>
       {activeSectionPhotos.length === 0 && <div style={{ border: "1px dashed #ccc", color: "#777", fontFamily: "'Inter', sans-serif", padding: "4rem 2rem", textAlign: "center" }}>No photos in this set yet. Use Add Media or the Photos panel to upload images.</div>}
-      {workspaceViewMode === "list" ? renderListWorkspace() : <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${gridMinWidth}px, ${gridMaxWidth}px))`, gap: workspaceGridSize === "small" ? "1rem" : "1.75rem", justifyContent: "start" }}>{activeSectionPhotos.map((photo) => { const selected = selectedPhotoIds.includes(photo.id); const isCover = gallery.cover_image_id === photo.id; return <article key={photo.id} draggable onDragStart={() => setDraggedPhotoId(photo.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); reorderDraggedPhoto(photo.id); }} onClick={(event) => togglePhotoSelection(photo.id, event)} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ photoId: photo.id, x: event.clientX, y: event.clientY }); if (!selectedPhotoIds.includes(photo.id)) { setSelectedPhotoIds([photo.id]); setSelectionAnchorId(photo.id); } }} style={{ background: "#fff", border: `2px solid ${selected ? "#00b894" : isCover ? COLORS.gold : "transparent"}`, boxShadow: selected ? "0 0 0 3px rgba(0,184,148,0.16)" : "none", cursor: "grab", padding: workspaceGridSize === "small" ? "0.5rem" : "0.75rem", position: "relative", userSelect: "none" }}>{isCover && <span style={{ position: "absolute", left: 10, top: 10, background: COLORS.gold, color: COLORS.bg, fontFamily: "'Inter', sans-serif", fontSize: 9, fontWeight: 900, letterSpacing: "0.1em", padding: "4px 6px", textTransform: "uppercase", zIndex: 2 }}>Cover</span>}<div style={{ height: workspaceGridSize === "small" ? 110 : 185, background: "#f2f2f2", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}><img src={getPhotoPreviewUrl(photo)} alt={photo.alt_text || photo.title || "Gallery photo"} style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} /></div>{showFilenames && <div style={{ color: "#777", fontFamily: "'Inter', sans-serif", fontSize: 12, marginTop: 10, overflow: "hidden", textOverflow: "ellipsis", textAlign: "center", whiteSpace: "nowrap" }}>{photo.file_name || photo.title || photo.id}</div>}</article>; })}</div>}
+      {workspaceViewMode === "list" ? renderListWorkspace() : <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${gridMinWidth}px, ${gridMaxWidth}px))`, gap: workspaceGridSize === "small" ? "1rem" : "1.75rem", justifyContent: "start" }}>{activeSectionPhotos.map((photo) => { const selected = selectedPhotoIds.includes(photo.id); const isCover = gallery.cover_image_id === photo.id; return <article key={photo.id} draggable onDragStart={() => setDraggedPhotoId(photo.id)} onDragEnd={() => setDraggedPhotoId(null)} onDragOver={(event) => { event.preventDefault(); previewDraggedPhoto(photo.id); }} onDrop={(event) => { event.preventDefault(); reorderDraggedPhoto(photo.id); }} onClick={(event) => togglePhotoSelection(photo.id, event)} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ photoId: photo.id, x: event.clientX, y: event.clientY }); if (!selectedPhotoIds.includes(photo.id)) { setSelectedPhotoIds([photo.id]); setSelectionAnchorId(photo.id); } }} style={{ background: "#fff", border: `2px solid ${selected ? "#00b894" : isCover ? COLORS.gold : "transparent"}`, boxShadow: selected ? "0 0 0 3px rgba(0,184,148,0.16)" : "none", cursor: "grab", padding: workspaceGridSize === "small" ? "0.5rem" : "0.75rem", position: "relative", userSelect: "none", opacity: draggedPhotoId === photo.id ? 0.68 : 1, transform: draggedPhotoId === photo.id ? "scale(0.985)" : "scale(1)", transition: "border-color 0.14s ease, box-shadow 0.14s ease, opacity 0.14s ease, transform 0.14s ease" }}>{isCover && <span style={{ position: "absolute", left: 10, top: 10, background: COLORS.gold, color: COLORS.bg, fontFamily: "'Inter', sans-serif", fontSize: 9, fontWeight: 900, letterSpacing: "0.1em", padding: "4px 6px", textTransform: "uppercase", zIndex: 2 }}>Cover</span>}<div style={{ height: workspaceGridSize === "small" ? 110 : 185, background: "#f2f2f2", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}><img src={getPhotoPreviewUrl(photo)} alt={photo.alt_text || photo.title || "Gallery photo"} style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} /></div>{showFilenames && <div style={{ color: "#777", fontFamily: "'Inter', sans-serif", fontSize: 12, marginTop: 10, overflow: "hidden", textOverflow: "ellipsis", textAlign: "center", whiteSpace: "nowrap" }}>{photo.file_name || photo.title || photo.id}</div>}</article>; })}</div>}
       {contextMenu && contextPhoto && <div onClick={(event) => event.stopPropagation()} style={{ position: "fixed", left: contextMenu.x, top: contextMenu.y, zIndex: 150, minWidth: 220, background: "#fff", border: "1px solid #ddd", boxShadow: "0 18px 55px rgba(0,0,0,0.18)", padding: "0.5rem" }}>{[["Open", () => openPhoto(contextPhoto)], ["Set as cover", () => setCoverImage(contextPhoto.id)], ["Copy filename", () => copyFilenames([contextPhoto])], ["Move up", () => moveSelectedByStep("up")], ["Move down", () => moveSelectedByStep("down")], ["Watermark later", () => showLaterNotice("Watermark")], ["Create mobile app later", () => showLaterNotice("Mobile app")], ["Delete", () => removePhoto(contextPhoto.id)]].map(([label, action]) => <button type="button" key={label} onClick={action} style={{ ...whiteMenuButton, color: label === "Delete" ? "#c0392b" : "#222" }}>{label}</button>)}</div>}
       {selectedPhotoIds.length > 0 && <div onClick={(event) => event.stopPropagation()} style={{ position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", zIndex: 120, width: "min(92vw, 760px)", background: "#171717", color: "#fff", boxShadow: "0 20px 60px rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: "0.8rem 1rem", boxSizing: "border-box" }}><button type="button" onClick={() => { setSelectedPhotoIds([]); setSelectionAnchorId(null); }} style={{ ...buttonStyle, border: "none", padding: "6px 8px" }}>✕</button><strong style={{ fontFamily: "'Inter', sans-serif", fontSize: 14, marginRight: "auto" }}>{selectedPhotoIds.length} selected</strong><button type="button" onClick={() => showLaterNotice("Favorites")} style={buttonStyle}>☆ Favorite</button><button type="button" onClick={() => showLaterNotice("Quick share")} style={buttonStyle}>🔗 Share</button><button type="button" onClick={deleteSelectedPhotos} style={{ ...buttonStyle, color: "#ff8b8b" }}>Delete</button><div style={{ position: "relative", marginLeft: "auto" }}><button type="button" onClick={() => setActionMenuOpen((open) => !open)} style={{ ...buttonStyle, minWidth: 44 }}>...</button>{actionMenuOpen && <div style={{ position: "absolute", right: 0, bottom: "calc(100% + 10px)", minWidth: 240, background: "#fff", color: "#111", border: "1px solid #ddd", boxShadow: "0 18px 55px rgba(0,0,0,0.2)", padding: "0.5rem" }}><button type="button" onClick={() => selectedPhotoIds[0] && setCoverImage(selectedPhotoIds[0])} style={whiteMenuButton}>Set first selected as cover</button><button type="button" onClick={() => moveSelectedByStep("up")} style={whiteMenuButton}>Move up</button><button type="button" onClick={() => moveSelectedByStep("down")} style={whiteMenuButton}>Move down</button><div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, padding: "0.45rem" }}><select value={moveTargetSectionId} onChange={(event) => setMoveTargetSectionId(event.target.value)} style={{ color: "#111", border: "1px solid #ddd", padding: "8px" }}>{sections.map((section) => <option key={section.id} value={section.id}>{section.title}</option>)}</select><button type="button" onClick={() => moveSelectedToSection(moveTargetSectionId)} style={{ color: "#111", border: "1px solid #ddd", background: "#fff", cursor: "pointer", padding: "8px" }}>Move</button></div><button type="button" onClick={() => copyFilenames()} style={whiteMenuButton}>Copy Names</button></div>}</div></div>}
     </main>;
