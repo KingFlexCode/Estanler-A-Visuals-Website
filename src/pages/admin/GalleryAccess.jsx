@@ -5,6 +5,7 @@ import { COLORS } from "../../lib/constants";
 import { supabase } from "../../lib/supabase";
 import { AdminNav } from "./Dashboard";
 
+const CLIENT_GALLERY_BUCKET = "client-galleries";
 const pageStyle = { minHeight: "100vh", background: COLORS.bg, color: COLORS.white };
 const shellFont = "'Inter', sans-serif";
 const inputStyle = {
@@ -96,6 +97,16 @@ function formatLocalDateTime(value) {
   return local.toISOString().slice(0, 16);
 }
 
+function sanitizeFileName(value = "watermark.png") {
+  return value.toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || `watermark-${Date.now()}.png`;
+}
+
+function storageUrl(path) {
+  if (!path) return "";
+  const { data } = supabase.storage.from(CLIENT_GALLERY_BUCKET).getPublicUrl(path);
+  return data?.publicUrl || "";
+}
+
 export default function GalleryAccess() {
   const { galleryId } = useParams();
   const navigate = useNavigate();
@@ -105,6 +116,7 @@ export default function GalleryAccess() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [uploadingWatermark, setUploadingWatermark] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
@@ -144,6 +156,60 @@ export default function GalleryAccess() {
     setGallery((current) => ({ ...current, [key]: value }));
   }
 
+  async function uploadWatermarkFile(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !gallery?.id) return;
+
+    const extension = file.name.split(".").pop()?.toLowerCase() || "";
+    const allowed = ["png", "svg", "webp"];
+    if (!allowed.includes(extension)) {
+      setError("Upload a PNG, SVG, or WEBP watermark file.");
+      return;
+    }
+
+    setUploadingWatermark(true);
+    setError("");
+    setNotice("");
+
+    const path = `watermarks/${gallery.id}/${Date.now()}-${sanitizeFileName(file.name)}`;
+    const { error: uploadError } = await supabase.storage
+      .from(CLIENT_GALLERY_BUCKET)
+      .upload(path, file, {
+        cacheControl: "3600",
+        contentType: file.type || (extension === "svg" ? "image/svg+xml" : "image/png"),
+        upsert: true,
+      });
+
+    setUploadingWatermark(false);
+
+    if (uploadError) {
+      setError(uploadError.message);
+      return;
+    }
+
+    setGallery((current) => ({
+      ...current,
+      watermark_file_path: path,
+      watermark_mode: current?.watermark_mode === "off" ? "subtle" : current?.watermark_mode || "subtle",
+      watermark_text: null,
+    }));
+    setNotice("Watermark file uploaded. Save access settings to apply it publicly.");
+  }
+
+  async function removeWatermarkFile() {
+    if (!gallery?.watermark_file_path) return;
+    const confirmed = window.confirm("Remove the watermark file from this gallery?");
+    if (!confirmed) return;
+
+    setUploadingWatermark(true);
+    setError("");
+    await supabase.storage.from(CLIENT_GALLERY_BUCKET).remove([gallery.watermark_file_path]);
+    setUploadingWatermark(false);
+    setGallery((current) => ({ ...current, watermark_file_path: null, watermark_mode: "off", watermark_text: null }));
+    setNotice("Watermark removed. Save access settings to apply this change publicly.");
+  }
+
   async function saveAccessSettings() {
     if (!gallery?.id) return;
     setSaving(true);
@@ -153,6 +219,7 @@ export default function GalleryAccess() {
     const hasExistingPassword = Boolean(gallery.access_password_hash);
     const expiresAt = gallery.expires_at ? new Date(gallery.expires_at).toISOString() : null;
     const accessMode = gallery.access_mode || "public";
+    const watermarkMode = gallery.watermark_mode || "off";
     const cleanPassword = password.trim();
 
     if (accessMode === "password" && !hasExistingPassword && !cleanPassword) {
@@ -167,14 +234,21 @@ export default function GalleryAccess() {
       return;
     }
 
+    if (watermarkMode !== "off" && !gallery.watermark_file_path) {
+      setSaving(false);
+      setError("Upload a watermark file or set Watermark Mode to Off.");
+      return;
+    }
+
     const payload = {
       access_mode: accessMode,
       expires_at: expiresAt,
       allow_downloads: gallery.allow_downloads !== false,
       allow_favorites: gallery.allow_favorites !== false,
       allow_sharing: gallery.allow_sharing !== false,
-      watermark_mode: gallery.watermark_mode || "off",
-      watermark_text: (gallery.watermark_text || "").trim() || null,
+      watermark_mode: watermarkMode,
+      watermark_file_path: gallery.watermark_file_path || null,
+      watermark_text: null,
     };
 
     const { data, error: updateError } = await supabase
@@ -262,6 +336,8 @@ export default function GalleryAccess() {
   const publicUrl = gallery.slug ? `${window.location.origin}/gallery/${gallery.slug}` : "Save the gallery slug first.";
   const hasExistingPassword = Boolean(gallery.access_password_hash);
   const passwordInputLocked = hasExistingPassword && !changingPassword;
+  const watermarkPreviewUrl = storageUrl(gallery.watermark_file_path);
+  const hasWatermarkAsset = Boolean(gallery.watermark_file_path);
 
   return (
     <div style={pageStyle}>
@@ -331,7 +407,7 @@ export default function GalleryAccess() {
             <div style={{ border: `1px solid ${COLORS.border}`, background: "rgba(255,255,255,0.025)", padding: "1rem", display: "grid", gap: "1rem" }}>
               <div>
                 <h2 style={{ fontFamily: shellFont, fontSize: 16, margin: "0 0 0.35rem" }}>Watermark</h2>
-                <p style={{ color: COLORS.muted, fontFamily: shellFont, fontSize: 12, lineHeight: 1.7, margin: 0 }}>Adds a visible overlay on public gallery photos. This discourages screenshots and unauthorized sharing, but it does not replace private storage or signed URLs.</p>
+                <p style={{ color: COLORS.muted, fontFamily: shellFont, fontSize: 12, lineHeight: 1.7, margin: 0 }}>Upload a transparent PNG, SVG, or WEBP watermark file. The public gallery will overlay this file on photos when subtle or strong mode is enabled.</p>
               </div>
               <label>
                 <FieldLabel>Watermark Mode</FieldLabel>
@@ -341,13 +417,23 @@ export default function GalleryAccess() {
                   <option value="strong">Strong</option>
                 </select>
               </label>
-              <label>
-                <FieldLabel>Watermark Text</FieldLabel>
-                <input value={gallery.watermark_text || ""} onChange={(event) => setField("watermark_text", event.target.value)} placeholder="Estanler Aleman Photography" style={inputStyle} />
-              </label>
+              <div>
+                <FieldLabel>Watermark File</FieldLabel>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <label style={{ ...buttonStyle, display: "inline-block", opacity: uploadingWatermark ? 0.6 : 1, cursor: uploadingWatermark ? "not-allowed" : "pointer" }}>
+                    {uploadingWatermark ? "Uploading..." : hasWatermarkAsset ? "Replace File" : "Upload File"}
+                    <input type="file" accept="image/png,image/svg+xml,image/webp" onChange={uploadWatermarkFile} disabled={uploadingWatermark} style={{ display: "none" }} />
+                  </label>
+                  <button type="button" onClick={removeWatermarkFile} disabled={uploadingWatermark || !hasWatermarkAsset} style={{ ...buttonStyle, color: "#ffb4b4", borderColor: "rgba(255,180,180,0.45)", opacity: uploadingWatermark || !hasWatermarkAsset ? 0.55 : 1 }}>Remove File</button>
+                </div>
+                {hasWatermarkAsset && <div style={{ marginTop: "1rem", border: `1px solid ${COLORS.border}`, background: "rgba(255,255,255,0.04)", padding: "1rem", display: "grid", gap: "0.75rem" }}>
+                  <img src={watermarkPreviewUrl} alt="Current watermark preview" style={{ maxWidth: 260, maxHeight: 120, objectFit: "contain", justifySelf: "start", background: "rgba(0,0,0,0.35)", padding: "0.75rem" }} />
+                  <span style={{ color: COLORS.muted, fontFamily: shellFont, fontSize: 12, overflowWrap: "anywhere" }}>{gallery.watermark_file_path}</span>
+                </div>}
+              </div>
             </div>
 
-            <button type="button" onClick={saveAccessSettings} disabled={saving} style={{ ...primaryButtonStyle, opacity: saving ? 0.6 : 1 }}>{saving ? "Saving..." : "Save Access Settings"}</button>
+            <button type="button" onClick={saveAccessSettings} disabled={saving || uploadingWatermark} style={{ ...primaryButtonStyle, opacity: saving || uploadingWatermark ? 0.6 : 1 }}>{saving ? "Saving..." : "Save Access Settings"}</button>
           </div>
 
           <aside style={{ border: `1px solid ${COLORS.border}`, background: "rgba(255,255,255,0.025)", padding: "1rem", position: "sticky", top: 90 }}>
@@ -361,6 +447,7 @@ export default function GalleryAccess() {
               <div><strong style={{ color: COLORS.white }}>Favorites:</strong> {gallery.allow_favorites !== false ? "On" : "Off"}</div>
               <div><strong style={{ color: COLORS.white }}>Sharing:</strong> {gallery.allow_sharing !== false ? "On" : "Off"}</div>
               <div><strong style={{ color: COLORS.white }}>Watermark:</strong> {gallery.watermark_mode || "off"}</div>
+              <div><strong style={{ color: COLORS.white }}>Watermark File:</strong> {hasWatermarkAsset ? "Set" : "Not set"}</div>
             </div>
             <div style={{ marginTop: "1rem" }}>
               <FieldLabel>Share Link</FieldLabel>
