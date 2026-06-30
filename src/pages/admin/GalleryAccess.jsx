@@ -192,6 +192,7 @@ export default function GalleryAccess() {
       ...current,
       watermark_file_path: path,
       watermark_mode: current?.watermark_mode === "off" ? "subtle" : current?.watermark_mode || "subtle",
+      watermark_layout: current?.watermark_layout || "fit",
       watermark_text: null,
     }));
     setNotice("Watermark file uploaded. Save access settings to apply it publicly.");
@@ -206,7 +207,7 @@ export default function GalleryAccess() {
     setError("");
     await supabase.storage.from(CLIENT_GALLERY_BUCKET).remove([gallery.watermark_file_path]);
     setUploadingWatermark(false);
-    setGallery((current) => ({ ...current, watermark_file_path: null, watermark_mode: "off", watermark_text: null }));
+    setGallery((current) => ({ ...current, watermark_file_path: null, watermark_mode: "off", watermark_layout: current?.watermark_layout || "fit", watermark_text: null }));
     setNotice("Watermark removed. Save access settings to apply this change publicly.");
   }
 
@@ -220,6 +221,7 @@ export default function GalleryAccess() {
     const expiresAt = gallery.expires_at ? new Date(gallery.expires_at).toISOString() : null;
     const accessMode = gallery.access_mode || "public";
     const watermarkMode = gallery.watermark_mode || "off";
+    const watermarkLayout = gallery.watermark_layout || "fit";
     const cleanPassword = password.trim();
 
     if (accessMode === "password" && !hasExistingPassword && !cleanPassword) {
@@ -247,6 +249,7 @@ export default function GalleryAccess() {
       allow_favorites: gallery.allow_favorites !== false,
       allow_sharing: gallery.allow_sharing !== false,
       watermark_mode: watermarkMode,
+      watermark_layout: watermarkLayout,
       watermark_file_path: gallery.watermark_file_path || null,
       watermark_text: null,
     };
@@ -407,7 +410,7 @@ export default function GalleryAccess() {
             <div style={{ border: `1px solid ${COLORS.border}`, background: "rgba(255,255,255,0.025)", padding: "1rem", display: "grid", gap: "1rem" }}>
               <div>
                 <h2 style={{ fontFamily: shellFont, fontSize: 16, margin: "0 0 0.35rem" }}>Watermark</h2>
-                <p style={{ color: COLORS.muted, fontFamily: shellFont, fontSize: 12, lineHeight: 1.7, margin: 0 }}>Upload a transparent PNG, SVG, or WEBP watermark file. The public gallery will overlay this file on photos when subtle or strong mode is enabled.</p>
+                <p style={{ color: COLORS.muted, fontFamily: shellFont, fontSize: 12, lineHeight: 1.7, margin: 0 }}>Upload a transparent PNG, SVG, or WEBP watermark file. Fit uses one centered watermark. Tile repeats the watermark across the entire image.</p>
               </div>
               <label>
                 <FieldLabel>Watermark Mode</FieldLabel>
@@ -415,6 +418,13 @@ export default function GalleryAccess() {
                   <option value="off">Off</option>
                   <option value="subtle">Subtle</option>
                   <option value="strong">Strong</option>
+                </select>
+              </label>
+              <label>
+                <FieldLabel>Watermark Layout</FieldLabel>
+                <select value={gallery.watermark_layout || "fit"} onChange={(event) => setField("watermark_layout", event.target.value)} style={inputStyle}>
+                  <option value="fit">Fit Image</option>
+                  <option value="tile">Tile Entire Image</option>
                 </select>
               </label>
               <div>
@@ -447,6 +457,7 @@ export default function GalleryAccess() {
               <div><strong style={{ color: COLORS.white }}>Favorites:</strong> {gallery.allow_favorites !== false ? "On" : "Off"}</div>
               <div><strong style={{ color: COLORS.white }}>Sharing:</strong> {gallery.allow_sharing !== false ? "On" : "Off"}</div>
               <div><strong style={{ color: COLORS.white }}>Watermark:</strong> {gallery.watermark_mode || "off"}</div>
+              <div><strong style={{ color: COLORS.white }}>Watermark Layout:</strong> {gallery.watermark_layout || "fit"}</div>
               <div><strong style={{ color: COLORS.white }}>Watermark File:</strong> {hasWatermarkAsset ? "Set" : "Not set"}</div>
             </div>
             <div style={{ marginTop: "1rem" }}>
