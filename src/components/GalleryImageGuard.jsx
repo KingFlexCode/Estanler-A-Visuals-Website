@@ -1,7 +1,21 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { useLocation } from "react-router-dom";
+import { supabase } from "../lib/supabase";
+
+const DEFAULT_WATERMARK_TEXT = "Estanler Aleman Photography";
+const WATERMARK_CLASS = "est-gallery-watermark-overlay";
 
 function isPublicGalleryPage() {
   return window.location.pathname.startsWith("/gallery/");
+}
+
+function getSlugFromPathname(pathname = window.location.pathname) {
+  const [, gallery, slug] = pathname.split("/");
+  return gallery === "gallery" ? slug || "" : "";
+}
+
+function unlockStorageKey(slug = "") {
+  return slug ? `client-gallery-unlock:${slug}` : "";
 }
 
 function galleryDownloadsEnabled() {
@@ -12,10 +26,116 @@ function isGalleryImageTarget(target) {
   return Boolean(target?.closest?.("img"));
 }
 
+function removeWatermarks() {
+  document.querySelectorAll(`.${WATERMARK_CLASS}`).forEach((node) => node.remove());
+}
+
+function getWatermarkParent(image) {
+  const photoCard = image.closest("article");
+  if (photoCard) return photoCard;
+
+  const lightboxFrame = image.parentElement;
+  if (lightboxFrame && lightboxFrame.style?.placeItems === "center") return lightboxFrame;
+
+  return image.parentElement;
+}
+
+function applyWatermarks(config) {
+  removeWatermarks();
+  if (!isPublicGalleryPage()) return;
+  if (!config || config.watermarkMode === "off") return;
+
+  const watermarkText = (config.watermarkText || DEFAULT_WATERMARK_TEXT).trim() || DEFAULT_WATERMARK_TEXT;
+  const strong = config.watermarkMode === "strong";
+  const targets = document.querySelectorAll("main#gallery-sections img, div[style*='rgba(0,0,0,0.96)'] img");
+
+  targets.forEach((image) => {
+    const parent = getWatermarkParent(image);
+    if (!parent || parent.querySelector?.(`.${WATERMARK_CLASS}`)) return;
+
+    const currentPosition = window.getComputedStyle(parent).position;
+    if (currentPosition === "static") parent.style.position = "relative";
+
+    const overlay = document.createElement("span");
+    overlay.className = WATERMARK_CLASS;
+    overlay.textContent = watermarkText;
+    Object.assign(overlay.style, {
+      position: "absolute",
+      inset: "0",
+      zIndex: "12",
+      pointerEvents: "none",
+      display: "grid",
+      placeItems: "center",
+      color: "rgba(255,255,255,0.86)",
+      fontFamily: "Inter, Arial, sans-serif",
+      fontSize: strong ? "clamp(1rem, 4.5vw, 3.25rem)" : "clamp(0.85rem, 2.7vw, 1.85rem)",
+      fontWeight: strong ? "900" : "800",
+      letterSpacing: strong ? "0.16em" : "0.12em",
+      lineHeight: "1.2",
+      opacity: strong ? "0.46" : "0.24",
+      textAlign: "center",
+      textShadow: "0 2px 14px rgba(0,0,0,0.58)",
+      textTransform: "uppercase",
+      transform: "rotate(-18deg)",
+      userSelect: "none",
+      mixBlendMode: "screen",
+      padding: "1rem",
+      boxSizing: "border-box",
+    });
+    parent.appendChild(overlay);
+  });
+}
+
+function normalizeConfig(gallery) {
+  return {
+    downloadsEnabled: gallery?.allow_downloads !== false,
+    watermarkMode: gallery?.watermark_mode || "off",
+    watermarkText: gallery?.watermark_text || gallery?.client_name || DEFAULT_WATERMARK_TEXT,
+  };
+}
+
 export default function GalleryImageGuard() {
+  const location = useLocation();
+  const configRef = useRef({ downloadsEnabled: true, watermarkMode: "off", watermarkText: DEFAULT_WATERMARK_TEXT });
+
+  useEffect(() => {
+    let cancelled = false;
+    const slug = getSlugFromPathname(location.pathname);
+
+    async function loadGalleryProtection() {
+      if (!slug) {
+        configRef.current = { downloadsEnabled: true, watermarkMode: "off", watermarkText: DEFAULT_WATERMARK_TEXT };
+        removeWatermarks();
+        return;
+      }
+
+      const savedPassword = window.sessionStorage.getItem(unlockStorageKey(slug));
+      const { data, error } = await supabase.rpc("get_client_gallery_public_payload", {
+        p_slug: slug,
+        p_password: savedPassword || null,
+      });
+
+      if (cancelled || error) return;
+      if (data?.gallery) configRef.current = normalizeConfig(data.gallery);
+      applyWatermarks(configRef.current);
+    }
+
+    loadGalleryProtection();
+
+    const observer = new MutationObserver(() => applyWatermarks(configRef.current));
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+      removeWatermarks();
+    };
+  }, [location.pathname]);
+
   useEffect(() => {
     function shouldBlockImageSave(event) {
-      return isPublicGalleryPage() && isGalleryImageTarget(event.target) && !galleryDownloadsEnabled();
+      const downloadsDisabled = configRef.current?.downloadsEnabled === false || !galleryDownloadsEnabled();
+      return isPublicGalleryPage() && isGalleryImageTarget(event.target) && downloadsDisabled;
     }
 
     function handleContextMenu(event) {
