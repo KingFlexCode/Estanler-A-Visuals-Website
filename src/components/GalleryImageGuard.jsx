@@ -42,29 +42,40 @@ function getWatermarkParent(image) {
 
 function styleWatermark(overlay, config) {
   const strong = config.watermarkMode === "strong";
-  overlay.textContent = (config.watermarkText || DEFAULT_WATERMARK_TEXT).trim() || DEFAULT_WATERMARK_TEXT;
+  const watermarkText = (config.watermarkText || DEFAULT_WATERMARK_TEXT).trim() || DEFAULT_WATERMARK_TEXT;
+  overlay.innerHTML = `<span>${watermarkText}</span>`;
   Object.assign(overlay.style, {
     position: "absolute",
     inset: "0",
-    zIndex: "12",
+    zIndex: "2147483000",
     pointerEvents: "none",
     display: "grid",
     placeItems: "center",
-    color: "rgba(255,255,255,0.86)",
+    overflow: "hidden",
+    padding: "1rem",
+    boxSizing: "border-box",
+    userSelect: "none",
+  });
+
+  const textNode = overlay.firstElementChild;
+  if (!textNode) return;
+  Object.assign(textNode.style, {
+    color: strong ? "rgba(255,255,255,0.82)" : "rgba(255,255,255,0.58)",
+    background: strong ? "rgba(0,0,0,0.18)" : "rgba(0,0,0,0.08)",
+    border: strong ? "1px solid rgba(255,255,255,0.28)" : "1px solid rgba(255,255,255,0.16)",
+    boxShadow: "0 8px 30px rgba(0,0,0,0.28)",
     fontFamily: "Inter, Arial, sans-serif",
     fontSize: strong ? "clamp(1rem, 4.5vw, 3.25rem)" : "clamp(0.85rem, 2.7vw, 1.85rem)",
     fontWeight: strong ? "900" : "800",
     letterSpacing: strong ? "0.16em" : "0.12em",
     lineHeight: "1.2",
-    opacity: strong ? "0.46" : "0.24",
+    maxWidth: "92%",
+    padding: strong ? "0.55em 0.8em" : "0.45em 0.7em",
     textAlign: "center",
-    textShadow: "0 2px 14px rgba(0,0,0,0.58)",
+    textShadow: "0 2px 14px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.95)",
     textTransform: "uppercase",
     transform: "rotate(-18deg)",
-    userSelect: "none",
-    mixBlendMode: "screen",
-    padding: "1rem",
-    boxSizing: "border-box",
+    WebkitTextStroke: strong ? "0.7px rgba(0,0,0,0.5)" : "0.45px rgba(0,0,0,0.45)",
   });
 }
 
