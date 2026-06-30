@@ -51,30 +51,18 @@ function ToggleRow({ title, description, checked, onChange }) {
   );
 }
 
-function PasswordInput({ value, onChange, visible, onToggle, hasExistingPassword }) {
-  const showingExisting = hasExistingPassword && !value;
-  const displayValue = showingExisting ? (visible ? "Password is active" : passwordMask) : value;
-
+function PasswordInput({ value, onChange, visible, onToggle, locked }) {
   return (
     <div style={{ position: "relative" }}>
       <input
-        type={visible || showingExisting ? "text" : "password"}
-        value={displayValue}
-        onFocus={(event) => {
-          if (showingExisting) event.currentTarget.select();
-        }}
-        onChange={(event) => {
-          const nextValue = event.target.value;
-          if (showingExisting) {
-            onChange(nextValue.replace(passwordMask, "").replace("Password is active", ""));
-            return;
-          }
-          onChange(nextValue);
-        }}
-        placeholder={hasExistingPassword ? "Enter a new password to replace the current one" : "Enter new gallery password"}
-        style={{ ...inputStyle, paddingRight: 52, color: showingExisting && visible ? COLORS.muted : COLORS.white }}
+        type={visible && !locked ? "text" : "password"}
+        value={locked ? passwordMask : value}
+        readOnly={locked}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Enter new gallery password"
+        style={{ ...inputStyle, paddingRight: locked ? 12 : 52, color: locked ? COLORS.muted : COLORS.white, cursor: locked ? "not-allowed" : "text" }}
       />
-      <button
+      {!locked && <button
         type="button"
         onClick={onToggle}
         title={visible ? "Hide password" : "Show password"}
@@ -94,7 +82,7 @@ function PasswordInput({ value, onChange, visible, onToggle, hasExistingPassword
         }}
       >
         {visible ? "◉" : "◌"}
-      </button>
+      </button>}
     </div>
   );
 }
@@ -113,6 +101,7 @@ export default function GalleryAccess() {
   const navigate = useNavigate();
   const [gallery, setGallery] = useState(null);
   const [password, setPassword] = useState("");
+  const [changingPassword, setChangingPassword] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -161,8 +150,23 @@ export default function GalleryAccess() {
     setError("");
     setNotice("");
 
+    const hasExistingPassword = Boolean(gallery.access_password_hash);
     const expiresAt = gallery.expires_at ? new Date(gallery.expires_at).toISOString() : null;
     const accessMode = gallery.access_mode || "public";
+    const cleanPassword = password.trim();
+
+    if (accessMode === "password" && !hasExistingPassword && !cleanPassword) {
+      setSaving(false);
+      setError("Enter a password before saving password-protected access.");
+      return;
+    }
+
+    if (accessMode === "password" && changingPassword && !cleanPassword) {
+      setSaving(false);
+      setError("Enter the new password before saving the password change.");
+      return;
+    }
+
     const payload = {
       access_mode: accessMode,
       expires_at: expiresAt,
@@ -185,8 +189,7 @@ export default function GalleryAccess() {
     }
 
     let nextGallery = data;
-    const cleanPassword = password.trim();
-    if (accessMode === "password" && cleanPassword) {
+    if (accessMode === "password" && cleanPassword && (!hasExistingPassword || changingPassword)) {
       const { data: passwordData, error: passwordError } = await supabase.rpc("set_client_gallery_password", {
         p_gallery_id: gallery.id,
         p_password: cleanPassword,
@@ -198,6 +201,7 @@ export default function GalleryAccess() {
       }
       nextGallery = passwordData;
       setPassword("");
+      setChangingPassword(false);
       setShowPassword(false);
     }
 
@@ -206,6 +210,9 @@ export default function GalleryAccess() {
         p_gallery_id: gallery.id,
         p_password: "",
       });
+      setPassword("");
+      setChangingPassword(false);
+      setShowPassword(false);
     }
 
     setGallery(nextGallery);
@@ -215,6 +222,9 @@ export default function GalleryAccess() {
 
   async function clearPassword() {
     if (!gallery?.id) return;
+    const confirmed = window.confirm("Clear this gallery password? Anyone with the gallery link may lose password access rules until you set a new password.");
+    if (!confirmed) return;
+
     setSaving(true);
     setError("");
     const { data, error: clearError } = await supabase.rpc("set_client_gallery_password", {
@@ -228,6 +238,7 @@ export default function GalleryAccess() {
     }
     setGallery(data);
     setPassword("");
+    setChangingPassword(false);
     setShowPassword(false);
     setNotice("Gallery password cleared.");
   }
@@ -248,6 +259,7 @@ export default function GalleryAccess() {
 
   const publicUrl = gallery.slug ? `${window.location.origin}/gallery/${gallery.slug}` : "Save the gallery slug first.";
   const hasExistingPassword = Boolean(gallery.access_password_hash);
+  const passwordInputLocked = hasExistingPassword && !changingPassword;
 
   return (
     <div style={pageStyle}>
@@ -285,14 +297,17 @@ export default function GalleryAccess() {
             {gallery.access_mode === "password" && <div style={{ border: `1px solid ${COLORS.border}`, background: "rgba(255,255,255,0.025)", padding: "1rem" }}>
               <h2 style={{ fontFamily: shellFont, fontSize: 16, margin: "0 0 1rem" }}>Password</h2>
               <label>
-                <FieldLabel>{hasExistingPassword ? "Password Set" : "Set Password"}</FieldLabel>
-                <PasswordInput value={password} onChange={setPassword} visible={showPassword} onToggle={() => setShowPassword((visible) => !visible)} hasExistingPassword={hasExistingPassword} />
+                <FieldLabel>{hasExistingPassword ? (changingPassword ? "New Password" : "Password Set") : "Set Password"}</FieldLabel>
+                <PasswordInput value={password} onChange={setPassword} visible={showPassword} onToggle={() => setShowPassword((visible) => !visible)} locked={passwordInputLocked} />
               </label>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: "0.85rem", flexWrap: "wrap" }}>
+                {hasExistingPassword && !changingPassword && <button type="button" onClick={() => { setChangingPassword(true); setPassword(""); setShowPassword(false); }} disabled={saving} style={{ ...buttonStyle, color: COLORS.gold }}>Change Password</button>}
+                {hasExistingPassword && changingPassword && <button type="button" onClick={() => { setChangingPassword(false); setPassword(""); setShowPassword(false); setError(""); }} disabled={saving} style={buttonStyle}>Cancel Change</button>}
                 <button type="button" onClick={clearPassword} disabled={saving || !hasExistingPassword} style={{ ...buttonStyle, color: "#ffb4b4", borderColor: "rgba(255,180,180,0.45)", opacity: saving || !hasExistingPassword ? 0.55 : 1 }}>Clear Password</button>
-                {hasExistingPassword && <span style={{ color: COLORS.gold, fontFamily: shellFont, fontSize: 12 }}>A password is currently active.</span>}
+                {hasExistingPassword && !changingPassword && <span style={{ color: COLORS.gold, fontFamily: shellFont, fontSize: 12 }}>A password is currently active.</span>}
+                {hasExistingPassword && changingPassword && <span style={{ color: COLORS.gold, fontFamily: shellFont, fontSize: 12 }}>Enter a new password, then save to replace the current one.</span>}
               </div>
-              <p style={{ color: COLORS.muted, fontFamily: shellFont, fontSize: 12, lineHeight: 1.7, margin: "0.85rem 0 0" }}>The password is hashed in Supabase. The field shows a masked active-password state. Type a new password here to replace it.</p>
+              <p style={{ color: COLORS.muted, fontFamily: shellFont, fontSize: 12, lineHeight: 1.7, margin: "0.85rem 0 0" }}>The password is hashed in Supabase. When a password already exists, the field is locked so it cannot be changed by accident.</p>
             </div>}
 
             <div style={{ border: `1px solid ${COLORS.border}`, background: "rgba(255,255,255,0.025)", padding: "1rem" }}>
