@@ -4,6 +4,7 @@ import { supabase } from "../lib/supabase";
 
 const BUCKET = "client-galleries";
 const WATERMARK_CLASS = "est-gallery-watermark-overlay";
+const WATERMARK_IMAGE_CLASS = "est-gallery-watermark-image";
 
 function isPublicGalleryPage() {
   return window.location.pathname.startsWith("/gallery/");
@@ -46,36 +47,77 @@ function getWatermarkParent(image) {
   return image.parentElement;
 }
 
-function styleWatermark(overlay, config) {
-  const strong = config.watermarkMode === "strong";
-  const watermarkUrl = storageUrl(config.watermarkFilePath);
+function resetOverlay(overlay) {
   overlay.innerHTML = "";
+  overlay.style.backgroundImage = "none";
+  overlay.style.backgroundRepeat = "initial";
+  overlay.style.backgroundSize = "initial";
+  overlay.style.backgroundPosition = "initial";
+  overlay.style.opacity = "";
+  overlay.dataset.watermarkKey = "";
+}
 
-  if (!watermarkUrl) return;
+function styleWatermark(overlay, config) {
+  const mode = config.watermarkMode || "off";
+  const layout = config.watermarkLayout || "fit";
+  const watermarkUrl = storageUrl(config.watermarkFilePath);
+  const strong = mode === "strong";
+  const key = `${watermarkUrl}|${mode}|${layout}`;
+
+  if (!watermarkUrl) {
+    resetOverlay(overlay);
+    return;
+  }
+
+  if (overlay.dataset.watermarkKey === key) return;
+
+  overlay.dataset.watermarkKey = key;
+  overlay.innerHTML = "";
 
   Object.assign(overlay.style, {
     position: "absolute",
     inset: "0",
     zIndex: "2147483000",
     pointerEvents: "none",
-    display: "grid",
-    placeItems: "center",
     overflow: "hidden",
-    padding: strong ? "clamp(1rem, 4vw, 3rem)" : "clamp(1rem, 5vw, 4rem)",
     boxSizing: "border-box",
     userSelect: "none",
   });
 
+  if (layout === "tile") {
+    Object.assign(overlay.style, {
+      display: "block",
+      padding: "0",
+      backgroundImage: `url("${watermarkUrl}")`,
+      backgroundRepeat: "repeat",
+      backgroundPosition: "center",
+      backgroundSize: strong ? "min(34%, 220px) auto" : "min(42%, 280px) auto",
+      opacity: strong ? "0.36" : "0.2",
+      filter: "drop-shadow(0 4px 14px rgba(0,0,0,0.3))",
+    });
+    return;
+  }
+
+  Object.assign(overlay.style, {
+    display: "grid",
+    placeItems: "center",
+    padding: strong ? "clamp(1rem, 4vw, 3rem)" : "clamp(1rem, 5vw, 4rem)",
+    backgroundImage: "none",
+    opacity: "1",
+    filter: "none",
+  });
+
   const image = document.createElement("img");
+  image.className = WATERMARK_IMAGE_CLASS;
   image.src = watermarkUrl;
   image.alt = "";
   image.draggable = false;
   Object.assign(image.style, {
     display: "block",
-    maxWidth: strong ? "min(58%, 520px)" : "min(42%, 360px)",
-    maxHeight: strong ? "38%" : "28%",
+    maxWidth: strong ? "min(62%, 560px)" : "min(44%, 380px)",
+    maxHeight: strong ? "42%" : "30%",
     objectFit: "contain",
-    opacity: strong ? "0.52" : "0.28",
+    opacity: strong ? "0.54" : "0.3",
     filter: "drop-shadow(0 8px 28px rgba(0,0,0,0.38))",
     transform: "rotate(-14deg)",
     userSelect: "none",
@@ -94,6 +136,8 @@ function applyWatermarks(config) {
   const activeParents = new Set();
 
   targets.forEach((image) => {
+    if (image.closest?.(`.${WATERMARK_CLASS}`)) return;
+
     const parent = getWatermarkParent(image);
     if (!parent) return;
     activeParents.add(parent);
@@ -119,13 +163,14 @@ function normalizeConfig(gallery) {
   return {
     downloadsEnabled: gallery?.allow_downloads !== false,
     watermarkMode: gallery?.watermark_mode || "off",
+    watermarkLayout: gallery?.watermark_layout || "fit",
     watermarkFilePath: gallery?.watermark_file_path || "",
   };
 }
 
 export default function GalleryImageGuard() {
   const location = useLocation();
-  const configRef = useRef({ downloadsEnabled: true, watermarkMode: "off", watermarkFilePath: "" });
+  const configRef = useRef({ downloadsEnabled: true, watermarkMode: "off", watermarkLayout: "fit", watermarkFilePath: "" });
   const frameRef = useRef(null);
 
   useEffect(() => {
@@ -142,7 +187,7 @@ export default function GalleryImageGuard() {
 
     async function loadGalleryProtection() {
       if (!slug) {
-        configRef.current = { downloadsEnabled: true, watermarkMode: "off", watermarkFilePath: "" };
+        configRef.current = { downloadsEnabled: true, watermarkMode: "off", watermarkLayout: "fit", watermarkFilePath: "" };
         removeWatermarks();
         return;
       }
