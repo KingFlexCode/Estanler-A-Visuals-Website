@@ -48,6 +48,16 @@ export async function removeGalleryFavorite(galleryId, imageId, visitorId = getG
   if (error) throw error;
 }
 
+export async function loadGalleryFavoriteSummary(galleryId) {
+  if (!galleryId) return [];
+  const { data, error } = await supabase
+    .from("client_gallery_favorite_summary")
+    .select("image_id,favorite_count,last_favorited_at")
+    .eq("gallery_id", galleryId);
+  if (error) throw error;
+  return data || [];
+}
+
 export function emptyFavoriteSet() {
   return new Set();
 }
