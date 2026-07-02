@@ -1,14 +1,14 @@
 import { useEffect } from "react";
-import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
+import { BrowserRouter, Navigate, Routes, Route, useLocation } from "react-router-dom";
 import Nav from "./components/Nav";
 import ProtectedRoute from "./components/ProtectedRoute";
 import Home from "./pages/Home";
-import Work from "./pages/Work";
+import Gallery from "./pages/Gallery";
 import Services from "./pages/Services";
 import About from "./pages/About";
 import Book from "./pages/Book";
 import Shop from "./pages/Shop";
-import PublicGalleryViewer from "./pages/PublicGalleryViewer";
+import ClientGalleryViewer from "./pages/ClientGalleryViewer";
 import AdminLogin from "./pages/admin/Login";
 import Dashboard from "./pages/admin/Dashboard";
 import Galleries from "./pages/admin/Galleries";
@@ -39,7 +39,7 @@ function NotFound() { return <div style={{ minHeight: "100vh", background: "#0A0
 function Layout() {
   const { pathname } = useLocation();
   const showNav = !NO_NAV_PATHS.some((path) => pathname.startsWith(path)) && !pathname.startsWith("/gallery/");
-  return <><FontLoader /><ScrollToTop />{showNav && <Nav />}<Routes><Route path="/" element={<Home />} /><Route path="/work" element={<Work />} /><Route path="/services" element={<Services />} /><Route path="/about" element={<About />} /><Route path="/book" element={<Book />} /><Route path="/shop" element={<Shop />} /><Route path="/gallery/:slug" element={<PublicGalleryViewer />} /><Route path="/admin/login" element={<AdminLogin />} /><Route path="/admin" element={<AdminPage><Dashboard /></AdminPage>} /><Route path="/admin/galleries" element={<AdminPage><Galleries /></AdminPage>} /><Route path="/admin/galleries/:galleryId" element={<AdminPage><GalleryEditor /></AdminPage>} /><Route path="/admin/portfolio" element={<AdminPage><PortfolioAdmin /></AdminPage>} /><Route path="/admin/inquiries" element={<AdminPage><Inquiries /></AdminPage>} /><Route path="*" element={<NotFound />} /></Routes></>;
+  return <><FontLoader /><ScrollToTop />{showNav && <Nav />}<Routes><Route path="/" element={<Home />} /><Route path="/gallery" element={<Gallery />} /><Route path="/work" element={<Navigate to="/gallery" replace />} /><Route path="/services" element={<Services />} /><Route path="/about" element={<About />} /><Route path="/book" element={<Book />} /><Route path="/shop" element={<Shop />} /><Route path="/gallery/:slug" element={<ClientGalleryViewer />} /><Route path="/admin/login" element={<AdminLogin />} /><Route path="/admin" element={<AdminPage><Dashboard /></AdminPage>} /><Route path="/admin/galleries" element={<AdminPage><Galleries /></AdminPage>} /><Route path="/admin/galleries/:galleryId" element={<AdminPage><GalleryEditor /></AdminPage>} /><Route path="/admin/portfolio" element={<AdminPage><PortfolioAdmin /></AdminPage>} /><Route path="/admin/inquiries" element={<AdminPage><Inquiries /></AdminPage>} /><Route path="*" element={<NotFound />} /></Routes></>;
 }
 
 export default function App() { return <BrowserRouter><Layout /></BrowserRouter>; }
